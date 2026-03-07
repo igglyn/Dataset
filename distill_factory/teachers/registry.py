@@ -3,49 +3,77 @@
 from __future__ import annotations
 
 import os
-from typing import Callable
+from typing import Callable, Literal
 
 from .base import DummyTeacher, Teacher
 from .hf_causal_lm import HFCausalLMTeacher
+from .llamacpp_server import LlamaCppServerTeacher
 from .vllm_causal_lm import VLLMCausalLMTeacher
+
+
+
+RuntimeBackendType = Literal["hf", "vllm", "llamacpp_server"]
+
+
+def teacher_name_to_backend_type(teacher_name: str) -> RuntimeBackendType | None:
+    """Map teacher identifiers to runtime backend types when known."""
+    mapping: dict[str, RuntimeBackendType] = {
+        "hf_causal_lm": "hf",
+        "vllm_causal_lm": "vllm",
+        "llamacpp_server": "llamacpp_server",
+    }
+    return mapping.get(teacher_name)
 
 
 TeacherFactory = Callable[[], Teacher]
 _TEACHER_REGISTRY: dict[str, TeacherFactory] = {}
 
 
-_TEACHER_CAPABILITIES: dict[str, dict[str, bool]] = {
+_TEACHER_CAPABILITIES: dict[str, dict[str, object]] = {
     "dummy": {
+        "backend_type": "hf",
         "supports_topk": True,
         "supports_structured": True,
         "supports_long_context": False,
         "supports_hidden_summary": False,
     },
     "bulk_grounding_teacher": {
+        "backend_type": "hf",
         "supports_topk": True,
         "supports_structured": True,
         "supports_long_context": False,
         "supports_hidden_summary": False,
     },
     "long_context_structure_teacher": {
+        "backend_type": "hf",
         "supports_topk": True,
         "supports_structured": True,
         "supports_long_context": False,
         "supports_hidden_summary": False,
     },
     "refinement_teacher": {
+        "backend_type": "hf",
         "supports_topk": True,
         "supports_structured": True,
         "supports_long_context": False,
         "supports_hidden_summary": False,
     },
     "hf_causal_lm": {
+        "backend_type": "hf",
         "supports_topk": True,
         "supports_structured": True,
         "supports_long_context": True,
         "supports_hidden_summary": True,
     },
     "vllm_causal_lm": {
+        "backend_type": "vllm",
+        "supports_topk": True,
+        "supports_structured": False,
+        "supports_long_context": True,
+        "supports_hidden_summary": False,
+    },
+    "llamacpp_server": {
+        "backend_type": "llamacpp_server",
         "supports_topk": True,
         "supports_structured": False,
         "supports_long_context": True,
@@ -93,6 +121,16 @@ def validate_teacher_capabilities(
             f"missing required capabilities: {', '.join(missing)}."
         )
 
+
+
+
+def validate_teacher_backend_compatibility(teacher_name: str, backend_type: str) -> None:
+    """Validate explicit backend selection against known built-in teachers."""
+    inferred = teacher_name_to_backend_type(teacher_name)
+    if inferred is not None and inferred != backend_type:
+        raise ValueError(
+            f"Teacher '{teacher_name}' is tied to backend_type '{inferred}', got '{backend_type}'."
+        )
 
 def register_teacher(name: str) -> Callable[[TeacherFactory], TeacherFactory]:
     """Decorator to register a teacher factory by name."""
@@ -162,4 +200,17 @@ def _build_vllm_causal_lm_teacher() -> Teacher:
         batch_size=int(os.getenv("DISTILL_VLLM_BATCH_SIZE", "1")),
         gpu_memory_utilization=float(os.getenv("DISTILL_VLLM_GPU_MEMORY_UTILIZATION", "0.9")),
         trust_remote_code=os.getenv("DISTILL_VLLM_TRUST_REMOTE_CODE", "false").lower() == "true",
+    )
+
+
+@register_teacher("llamacpp_server")
+def _build_llamacpp_server_teacher() -> Teacher:
+    """llama.cpp server backend factory configured via env vars."""
+    return LlamaCppServerTeacher(
+        base_url=os.getenv("DISTILL_LLAMACPP_BASE_URL", "http://127.0.0.1:8080"),
+        model_hint=os.getenv("DISTILL_LLAMACPP_MODEL_HINT") or None,
+        request_timeout=float(os.getenv("DISTILL_LLAMACPP_REQUEST_TIMEOUT", "30.0")),
+        max_context=int(os.getenv("DISTILL_LLAMACPP_MAX_CONTEXT", "2048")),
+        default_top_k=int(os.getenv("DISTILL_LLAMACPP_TOP_K", "5")),
+        default_temperature=float(os.getenv("DISTILL_LLAMACPP_TEMPERATURE", "0.0")),
     )

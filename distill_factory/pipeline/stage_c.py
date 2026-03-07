@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from distill_factory.pipeline.prompts import build_prompt_record
@@ -93,6 +94,19 @@ def run_stage_c(
     else:
         teacher = get_teacher(teacher_name)
         requires_hidden_summary = any(bool(r.get("extract_hidden_summary", False)) for r in records)
+        requires_tokenizer_diagnostics = os.environ.get("DISTILL_FACTORY_LOG_TOKEN_LENGTHS", "0") == "1"
+
+        if mode == "structured_outputs" and not bool(getattr(teacher, "supports_structured", lambda: False)()):
+            raise ValueError(
+                f"Stage C mode='structured_outputs' requested, but teacher '{teacher_name}' "
+                "does not support structured generation."
+            )
+        if requires_hidden_summary and not bool(getattr(teacher, "supports_hidden_summary", lambda: False)()):
+            raise ValueError(
+                f"Stage C requested hidden_summary extraction, but teacher '{teacher_name}' "
+                "does not support hidden summaries."
+            )
+
         if mode == "structured_outputs":
             validate_teacher_capabilities(
                 teacher,
@@ -113,6 +127,11 @@ def run_stage_c(
 
         teacher.prepare()
         try:
+            if requires_tokenizer_diagnostics and not bool(getattr(teacher, "supports_tokenizer_diagnostics", lambda: False)()):
+                raise ValueError(
+                    f"Stage C token-length diagnostics requested (DISTILL_FACTORY_LOG_TOKEN_LENGTHS=1), "
+                    f"but teacher '{teacher_name}' does not support tokenizer diagnostics."
+                )
             if mode == "structured_outputs":
                 outputs = teacher.infer_structured(structured_inputs)
             else:

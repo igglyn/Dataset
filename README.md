@@ -45,9 +45,100 @@ Choose backend via config:
 
 ```toml
 [stage_a]
-teacher_name = "hf_causal_lm"     # or "vllm_causal_lm"
+teacher_name = "hf_causal_lm"     # or "vllm_causal_lm" / "llamacpp_server"
+backend_type = "hf"               # or "vllm" / "llamacpp_server"
 mode = "topk_logits"
 ```
+
+For complete examples, start from `configs/examples/default.toml` or one of the backend-specific examples in `configs/examples/*_backend.toml`.
+
+
+## Teacher abstraction vs runtime backend
+
+The pipeline now separates two concepts explicitly:
+
+- **Teacher abstraction**: stage-level semantics used by dataset construction (top-k distillation, structured outputs, long-context behavior).
+- **Runtime backend**: execution transport/engine that actually serves model inference.
+
+This allows one teacher contract to run on different runtime types:
+
+- `hf` (local Python Hugging Face runtime)
+- `vllm` (local Python vLLM runtime)
+- `llamacpp_server` (external server runtime, reserved for integrations)
+
+Each stage config can set `backend_type` independently from `teacher_name`.
+
+Example:
+
+```toml
+[stage_a]
+teacher_name = "hf_causal_lm"
+backend_type = "hf"
+mode = "topk_logits"
+
+[stage_b]
+teacher_name = "vllm_causal_lm"
+backend_type = "vllm"
+mode = "long_context"
+```
+
+If `backend_type` is omitted for known built-in teachers (`hf_causal_lm`, `vllm_causal_lm`), it is inferred automatically for backward compatibility.
+
+
+
+## Choosing a runtime backend (HF vs vLLM vs llama.cpp server)
+
+Why explicit runtime backends now:
+
+- backend choice is now a **first-class config decision** (`backend_type`) instead of implicit behavior tied only to teacher naming
+- this makes runs reproducible, easier to audit, and safer to migrate across environments
+- it also keeps teacher semantics stable while letting you swap execution runtimes
+
+`llama.cpp` is separate from `vllm`:
+
+- `vllm` is a Python runtime backend inside this process
+- `llamacpp_server` is an **external HTTP runtime** (user-managed server process)
+- choose `llamacpp_server` if you want to use a custom local llama.cpp build (compiler flags, quant kernels, patches) without changing pipeline code
+
+When to choose each backend:
+
+- **HF (`backend_type = "hf"`)**
+  - best for widest compatibility and structured Stage C support
+  - good default for bring-up and CPU/single-GPU experimentation
+- **vLLM (`backend_type = "vllm"`)**
+  - best for high-throughput top-k distillation on supported GPU setups
+  - Stage C structured mode is not supported
+- **llama.cpp server (`backend_type = "llamacpp_server"`)**
+  - best when you operate a separate llama.cpp server, especially with custom local builds
+  - supports top-k distillation subset via server API; unsupported features fail early and explicitly
+
+Ready-to-use backend example configs:
+
+- `configs/examples/hf_backend.toml`
+- `configs/examples/vllm_backend.toml`
+- `configs/examples/llamacpp_server_backend.toml`
+
+Migration notes (from earlier implicit backend structure):
+
+1. Set `backend_type` explicitly in each enabled stage (`stage_a`, `stage_b`, `stage_c`).
+2. Use a teacher/runtime pair that matches:
+   - `hf_causal_lm` + `hf`
+   - `vllm_causal_lm` + `vllm`
+   - `llamacpp_server` + `llamacpp_server`
+3. If you previously relied on `teacher_name` alone, keep the same teacher but add `backend_type` for clarity and future-proofing.
+4. For llama.cpp runs, move runtime details into config (`llama_base_url`, optional `llama_model_hint`, timeout) and treat the server as an external dependency.
+
+## Backend capability matrix (current)
+
+| Backend | supports_topk | supports_structured | supports_hidden_summary | supports_long_context | supports_tokenizer_diagnostics |
+|---|---:|---:|---:|---:|---:|
+| `hf` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `vllm` | ✅ | ❌ | ❌ | ✅ | ✅ |
+| `llamacpp_server` | ✅ | ❌ | ❌ | ✅ | ⚠️ depends on server tokenization endpoints |
+
+Notes:
+- Stage runners fail early if a requested feature is unsupported (for example structured mode in Stage C, hidden summaries, or token diagnostics).
+- For `llamacpp_server`, tokenizer diagnostics require compatible `/tokenize` or `/v1/tokenize` support.
 
 ## Hugging Face teacher setup (Stage A)
 
@@ -92,6 +183,61 @@ Current vLLM backend behavior mirrors HF output semantics as closely as practica
 - decodes `raw_bytes` as UTF-8 with replacement before tokenization
 
 
+
+
+## llama.cpp server backend (external runtime)
+
+You can run distillation against a **user-managed llama.cpp HTTP server** instead of a local Python runtime.
+
+Why this backend:
+
+- treat llama.cpp as an external runtime backend (`backend_type = "llamacpp_server"`)
+- reuse locally compiled llama.cpp optimizations/patches without changing Python runtime code
+- keep teacher semantics stable while swapping execution transport
+
+Example stage config:
+
+```toml
+[stage_a]
+teacher_name = "llamacpp_server"
+backend_type = "llamacpp_server"
+mode = "topk_logits"
+
+# llama.cpp server settings
+llama_base_url = "http://127.0.0.1:8080"
+llama_model_hint = "qwen2.5-7b-instruct-q4_k_m" # optional
+llama_request_timeout = 30.0
+
+# existing stage knobs still apply
+top_k = 5
+temperature = 0.0
+max_context = 2048
+```
+
+Startup check configuration example (minimal preflight):
+
+```toml
+[stage_a]
+teacher_name = "llamacpp_server"
+backend_type = "llamacpp_server"
+mode = "topk_logits"
+llama_base_url = "http://127.0.0.1:8080"
+llama_request_timeout = 10.0
+max_context = 2048
+top_k = 5
+temperature = 0.0
+```
+
+Current status:
+
+- startup/self-check is implemented via HTTP probes to common endpoints and metadata discovery
+- if endpoint metadata is missing, the backend keeps minimal safe assumptions and reports what it did discover
+- top-k extraction is implemented for OpenAI-compatible `/v1/completions` prompt logprobs responses
+- the backend requires numeric token-id keys in `top_logprobs` maps to produce `top_k_ids`; if unavailable, it fails explicitly
+- structured generation is not implemented for this backend in the current prompt
+- hidden-summary extraction is not supported for this backend
+
+Note: endpoint support varies across llama.cpp versions/builds; adjust the endpoint catalog and response field adapters in `distill_factory/teachers/llamacpp_server.py` to match your deployment.
 
 ## Teacher startup self-checks (preflight)
 
@@ -158,6 +304,9 @@ python scripts/measure_tokenization_cost.py --config configs/examples/default.to
 
 Use `--backend vllm` to estimate using the vLLM teacher tokenizer path.
 
+Use `--backend llamacpp_server` to estimate using a user-managed llama.cpp server **when tokenization endpoints are available** (`/tokenize` or `/v1/tokenize`).
+If those endpoints are not exposed by your server version/build, the command exits with an explicit unsupported-diagnostics error.
+
 ## Build preflight checklist convenience
 
 Before non-dry-run builds, `scripts/build_dataset.py` now prints a short preflight checklist
@@ -217,6 +366,24 @@ python scripts/inspect_dataset.py \
 ```
 
 Use `--sample-format json` to write a JSON preview file instead.
+
+
+## Backend parity sanity check (recommended)
+
+When introducing or switching a backend (especially `llamacpp_server`), run a tiny parity sanity check before large dataset builds:
+
+```bash
+python scripts/validate_backend_parity.py   --left-config configs/examples/hf_backend.toml   --right-config configs/examples/llamacpp_server_backend.toml   --sample-records 8
+```
+
+What it compares (without requiring exact logit equality):
+
+- record count
+- top-k field presence
+- token-length stats (when available)
+- entropy ranges (when available)
+
+Use this as a quick compatibility/sanity signal, not as a performance benchmark or numerical-equivalence test.
 
 ## Comparing two dataset runs
 

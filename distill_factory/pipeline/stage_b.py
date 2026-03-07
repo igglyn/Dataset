@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from distill_factory.data.chunking import build_long_context_records
@@ -111,6 +112,14 @@ def run_stage_b(
     else:
         teacher = get_teacher(teacher_name)
         requires_hidden_summary = any(bool(r.get("extract_hidden_summary", False)) for r in records)
+        requires_tokenizer_diagnostics = os.environ.get("DISTILL_FACTORY_LOG_TOKEN_LENGTHS", "0") == "1"
+
+        if requires_hidden_summary and not bool(getattr(teacher, "supports_hidden_summary", lambda: False)()):
+            raise ValueError(
+                f"Stage B requested hidden_summary extraction, but teacher '{teacher_name}' "
+                "does not support hidden summaries."
+            )
+
         validate_teacher_capabilities(
             teacher,
             teacher_name,
@@ -122,6 +131,11 @@ def run_stage_b(
         )
         teacher.prepare()
         try:
+            if requires_tokenizer_diagnostics and not bool(getattr(teacher, "supports_tokenizer_diagnostics", lambda: False)()):
+                raise ValueError(
+                    f"Stage B token-length diagnostics requested (DISTILL_FACTORY_LOG_TOKEN_LENGTHS=1), "
+                    f"but teacher '{teacher_name}' does not support tokenizer diagnostics."
+                )
             outputs = teacher.infer_topk(infer_inputs)
         finally:
             teacher.close()

@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from distill_factory.teachers.registry import teacher_name_to_backend_type
+
 try:
     import tomllib  # type: ignore[attr-defined]
 except ModuleNotFoundError:  # Python 3.10 fallback
@@ -68,6 +70,7 @@ class TeacherMixConfig:
 class StageAConfig:
     enabled: bool
     teacher_name: str
+    backend_type: str
     mode: str
     top_k: int
     temperature: float
@@ -80,6 +83,9 @@ class StageAConfig:
     dtype: str
     gpu_memory_utilization: float
     trust_remote_code: bool
+    llama_base_url: str
+    llama_model_hint: str | None
+    llama_request_timeout: float
     extract_hidden_summary: bool
     teacher_mixture: list[TeacherMixConfig]
 
@@ -88,6 +94,7 @@ class StageAConfig:
 class StageBConfig:
     enabled: bool
     teacher_name: str
+    backend_type: str
     mode: str
     top_k: int
     temperature: float
@@ -96,6 +103,9 @@ class StageBConfig:
     window_policy: str
     max_teacher_context: int
     target_region_policy: str
+    llama_base_url: str
+    llama_model_hint: str | None
+    llama_request_timeout: float
     extract_hidden_summary: bool
     teacher_mixture: list[TeacherMixConfig]
 
@@ -104,6 +114,7 @@ class StageBConfig:
 class StageCConfig:
     enabled: bool
     teacher_name: str
+    backend_type: str
     mode: str
     top_k: int
     temperature: float
@@ -111,6 +122,9 @@ class StageCConfig:
     template_name: str
     template_kwargs: dict[str, Any]
     deterministic: bool
+    llama_base_url: str
+    llama_model_hint: str | None
+    llama_request_timeout: float
     extract_hidden_summary: bool
     teacher_mixture: list[TeacherMixConfig]
 
@@ -314,6 +328,48 @@ def load_config(path: str | Path) -> PipelineConfig:
     stage_b_teacher_name = str(stage_b_cfg["teacher_name"])
     stage_c_teacher_name = str(stage_c_cfg["teacher_name"])
 
+    allowed_backend_types = {"hf", "vllm", "llamacpp_server"}
+
+    def _resolve_backend_type(stage_key: str, stage_table: dict[str, Any], teacher_name: str) -> str:
+        configured = str(stage_table.get("backend_type", "")).strip()
+        inferred = teacher_name_to_backend_type(teacher_name)
+        backend_type = configured or (inferred or "")
+        if not backend_type:
+            raise ValueError(
+                f"[{stage_key}].backend_type is required when teacher_name '{teacher_name}' cannot be mapped automatically"
+            )
+        if backend_type not in allowed_backend_types:
+            raise ValueError(
+                f"[{stage_key}].backend_type must be one of: hf, vllm, llamacpp_server"
+            )
+        return backend_type
+
+    stage_a_backend_type = _resolve_backend_type("stage_a", stage_a_cfg, stage_a_teacher_name)
+    stage_b_backend_type = _resolve_backend_type("stage_b", stage_b_cfg, stage_b_teacher_name)
+    stage_c_backend_type = _resolve_backend_type("stage_c", stage_c_cfg, stage_c_teacher_name)
+
+    def _validate_llamacpp_backend(stage_key: str, stage_table: dict[str, Any], backend_type: str) -> None:
+        if backend_type != "llamacpp_server":
+            return
+        base_url = str(stage_table.get("llama_base_url", "")).strip()
+        if not base_url:
+            raise ValueError(f"[{stage_key}].llama_base_url is required when backend_type='llamacpp_server'")
+        timeout = float(stage_table.get("llama_request_timeout", 30.0))
+        if timeout <= 0:
+            raise ValueError(f"[{stage_key}].llama_request_timeout must be > 0")
+
+    _validate_llamacpp_backend("stage_a", stage_a_cfg, stage_a_backend_type)
+    _validate_llamacpp_backend("stage_b", stage_b_cfg, stage_b_backend_type)
+    _validate_llamacpp_backend("stage_c", stage_c_cfg, stage_c_backend_type)
+
+    os.environ["DISTILL_LLAMACPP_BASE_URL"] = str(stage_a_cfg.get("llama_base_url", "http://127.0.0.1:8080"))
+    model_hint = stage_a_cfg.get("llama_model_hint")
+    os.environ["DISTILL_LLAMACPP_MODEL_HINT"] = "" if model_hint is None else str(model_hint)
+    os.environ["DISTILL_LLAMACPP_REQUEST_TIMEOUT"] = str(float(stage_a_cfg.get("llama_request_timeout", 30.0)))
+    os.environ["DISTILL_LLAMACPP_MAX_CONTEXT"] = str(int(stage_a_cfg.get("max_context", 2048)))
+    os.environ["DISTILL_LLAMACPP_TOP_K"] = str(int(stage_a_cfg.get("top_k", 5)))
+    os.environ["DISTILL_LLAMACPP_TEMPERATURE"] = str(float(stage_a_cfg.get("temperature", 0.0)))
+
     os.environ["DISTILL_FACTORY_LOG_TOKEN_LENGTHS"] = "1" if log_token_lengths else "0"
     os.environ["DISTILL_FACTORY_LOG_BYTE_LENGTHS"] = "1" if log_byte_lengths else "0"
 
@@ -360,6 +416,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         stage_a=StageAConfig(
             enabled=bool(stage_a_cfg["enabled"]),
             teacher_name=stage_a_teacher_name,
+            backend_type=stage_a_backend_type,
             mode=stage_a_mode,
             top_k=int(stage_a_cfg["top_k"]),
             temperature=float(stage_a_cfg["temperature"]),
@@ -372,12 +429,16 @@ def load_config(path: str | Path) -> PipelineConfig:
             dtype=str(stage_a_cfg.get("dtype", "auto")),
             gpu_memory_utilization=float(stage_a_cfg.get("gpu_memory_utilization", 0.9)),
             trust_remote_code=bool(stage_a_cfg.get("trust_remote_code", False)),
+            llama_base_url=str(stage_a_cfg.get("llama_base_url", "http://127.0.0.1:8080")),
+            llama_model_hint=None if stage_a_cfg.get("llama_model_hint") is None else str(stage_a_cfg.get("llama_model_hint")),
+            llama_request_timeout=float(stage_a_cfg.get("llama_request_timeout", 30.0)),
             extract_hidden_summary=bool(stage_a_cfg.get("extract_hidden_summary", False)),
             teacher_mixture=_parse_teacher_mixture(stage_a_cfg, default_teacher_name=stage_a_teacher_name),
         ),
         stage_b=StageBConfig(
             enabled=bool(stage_b_cfg["enabled"]),
             teacher_name=stage_b_teacher_name,
+            backend_type=stage_b_backend_type,
             mode=stage_b_mode,
             top_k=int(stage_b_cfg["top_k"]),
             temperature=float(stage_b_cfg["temperature"]),
@@ -386,12 +447,16 @@ def load_config(path: str | Path) -> PipelineConfig:
             window_policy=stage_b_window_policy,
             max_teacher_context=int(stage_b_cfg.get("max_teacher_context", stage_b_cfg.get("context_window", 2048))),
             target_region_policy=stage_b_target_region_policy,
+            llama_base_url=str(stage_b_cfg.get("llama_base_url", "http://127.0.0.1:8080")),
+            llama_model_hint=None if stage_b_cfg.get("llama_model_hint") is None else str(stage_b_cfg.get("llama_model_hint")),
+            llama_request_timeout=float(stage_b_cfg.get("llama_request_timeout", 30.0)),
             extract_hidden_summary=bool(stage_b_cfg.get("extract_hidden_summary", False)),
             teacher_mixture=_parse_teacher_mixture(stage_b_cfg, default_teacher_name=stage_b_teacher_name),
         ),
         stage_c=StageCConfig(
             enabled=bool(stage_c_cfg["enabled"]),
             teacher_name=stage_c_teacher_name,
+            backend_type=stage_c_backend_type,
             mode=stage_c_mode,
             top_k=int(stage_c_cfg["top_k"]),
             temperature=float(stage_c_cfg["temperature"]),
@@ -399,6 +464,9 @@ def load_config(path: str | Path) -> PipelineConfig:
             template_name=stage_c_template_name,
             template_kwargs=dict(stage_c_template_kwargs),
             deterministic=bool(stage_c_cfg.get("deterministic", True)),
+            llama_base_url=str(stage_c_cfg.get("llama_base_url", "http://127.0.0.1:8080")),
+            llama_model_hint=None if stage_c_cfg.get("llama_model_hint") is None else str(stage_c_cfg.get("llama_model_hint")),
+            llama_request_timeout=float(stage_c_cfg.get("llama_request_timeout", 30.0)),
             extract_hidden_summary=bool(stage_c_cfg.get("extract_hidden_summary", False)),
             teacher_mixture=_parse_teacher_mixture(stage_c_cfg, default_teacher_name=stage_c_teacher_name),
         ),

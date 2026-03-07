@@ -20,6 +20,7 @@ except ModuleNotFoundError:  # pragma: no cover
     torch = None
 
 from .base import Teacher
+from .runtime_base import RuntimeCapabilities, TeacherRuntime
 from .long_context import prepare_long_context_teacher_input
 
 try:
@@ -39,7 +40,7 @@ if torch is not None:
     }
 
 
-class HFCausalLMTeacher(Teacher):
+class HFCausalLMTeacher(Teacher, TeacherRuntime):
     """Minimal HF causal LM backend for teacher signal extraction."""
 
     def __init__(
@@ -72,6 +73,14 @@ class HFCausalLMTeacher(Teacher):
 
     def supports_hidden_summary(self) -> bool:
         return True
+
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(
+            backend_type="hf",
+            supports_topk=True,
+            supports_structured=True,
+            supports_tokenizer_diagnostics=True,
+        )
 
     def startup_self_check(self, requested_top_k: int | None = None) -> dict[str, Any]:
         """Run a lightweight backend startup validation before long pipeline runs."""
@@ -215,6 +224,19 @@ class HFCausalLMTeacher(Teacher):
             token_ids = self._tokenizer.encode(str(text), truncation=True, max_length=self.max_context)
             lengths.append(len(token_ids))
         return lengths
+
+    def tokenizer_diagnostics(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        texts = [self._extract_text(self._prepare_stage_b_record(r)) for r in records]
+        lengths = self.token_lengths(texts)
+        out: list[dict[str, Any]] = []
+        for text, token_length in zip(texts, lengths):
+            out.append(
+                {
+                    "teacher_input_token_length": int(token_length),
+                    "teacher_input_byte_length": len(text.encode("utf-8", errors="replace")),
+                }
+            )
+        return out
 
     def infer_topk(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if torch is None or self._tokenizer is None or self._model is None:

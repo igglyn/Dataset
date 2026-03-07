@@ -13,6 +13,7 @@ import math
 from typing import Any
 
 from .base import Teacher
+from .runtime_base import RuntimeCapabilities, TeacherRuntime
 from .long_context import prepare_long_context_teacher_input
 
 try:
@@ -27,7 +28,7 @@ except ModuleNotFoundError:  # pragma: no cover
     AutoTokenizer = None
 
 
-class VLLMCausalLMTeacher(Teacher):
+class VLLMCausalLMTeacher(Teacher, TeacherRuntime):
     """Minimal vLLM backend for top-k teacher signal extraction."""
 
     def __init__(
@@ -62,6 +63,14 @@ class VLLMCausalLMTeacher(Teacher):
 
     def supports_hidden_summary(self) -> bool:
         return False
+
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(
+            backend_type="vllm",
+            supports_topk=True,
+            supports_structured=False,
+            supports_tokenizer_diagnostics=True,
+        )
 
     def startup_self_check(self, requested_top_k: int | None = None) -> dict[str, Any]:
         """Run a lightweight backend startup validation before long pipeline runs."""
@@ -261,6 +270,20 @@ class VLLMCausalLMTeacher(Teacher):
             token_ids = token_ids[: self.max_context]
             lengths.append(len(token_ids))
         return lengths
+
+    def tokenizer_diagnostics(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        prepared_records = [self._prepare_stage_b_record(r) for r in records]
+        texts = [self._truncate_prompt(self._extract_text(r)) for r in prepared_records]
+        lengths = self.token_lengths(texts)
+        out: list[dict[str, Any]] = []
+        for text, token_length in zip(texts, lengths):
+            out.append(
+                {
+                    "teacher_input_token_length": int(token_length),
+                    "teacher_input_byte_length": len(text.encode("utf-8", errors="replace")),
+                }
+            )
+        return out
 
     def infer_topk(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if self._llm is None or self._tokenizer is None or SamplingParams is None:
