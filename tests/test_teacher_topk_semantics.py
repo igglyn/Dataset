@@ -8,6 +8,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import pytest
 
 from distill_factory.teachers.hf_causal_lm import HFCausalLMTeacher
+from distill_factory.teachers.llamacpp_server import LlamaCppServerTeacher
 from distill_factory.teachers.vllm_causal_lm import VLLMCausalLMTeacher
 
 
@@ -103,6 +104,114 @@ def test_vllm_validation_helper_rejects_unsorted_or_invalid() -> None:
             token_length=2,
         )
 
+
+
+
+
+
+def test_llamacpp_infer_topk_openai_logprobs_semantics() -> None:
+    class _FakeLlamaCppTeacher(LlamaCppServerTeacher):
+        def startup_self_check(self, requested_top_k: int | None = None) -> dict[str, object]:
+            return {"ok": True}
+
+        def _http_json(self, method: str, endpoint: str, payload: dict[str, object] | None = None) -> tuple[int, object]:
+            assert method == "POST"
+            assert endpoint == "/v1/completions"
+            return 200, {
+                "choices": [
+                    {
+                        "logprobs": {
+                            "prompt_token_ids": [11, 22, 33],
+                            "top_logprobs": [
+                                None,
+                                {"22": -0.2, "7": -0.5},
+                                {"33": -0.3, "9": -0.6},
+                            ],
+                        }
+                    }
+                ]
+            }
+
+    teacher = _FakeLlamaCppTeacher(base_url="http://localhost:8080", max_context=32, default_top_k=2)
+    teacher.prepare()
+    try:
+        output = teacher.infer_topk([{"raw_bytes": b"hello", "top_k": 2}])[0]
+    finally:
+        teacher.close()
+
+    _assert_common_topk_semantics(output, vocab_size=1000, expected_max_positions=2)
+    assert output["teacher_input_token_length"] == 3
+    assert len(output["top_k_ids"]) == 2
+
+
+def test_llamacpp_infer_topk_fails_without_numeric_token_ids() -> None:
+    class _BadLlamaCppTeacher(LlamaCppServerTeacher):
+        def startup_self_check(self, requested_top_k: int | None = None) -> dict[str, object]:
+            return {"ok": True}
+
+        def _http_json(self, method: str, endpoint: str, payload: dict[str, object] | None = None) -> tuple[int, object]:
+            return 200, {
+                "choices": [
+                    {
+                        "logprobs": {
+                            "prompt_token_ids": [1, 2],
+                            "top_logprobs": [None, {" hello": -0.2, " world": -0.4}],
+                        }
+                    }
+                ]
+            }
+
+    teacher = _BadLlamaCppTeacher(base_url="http://localhost:8080", max_context=32, default_top_k=2)
+    teacher.prepare()
+    try:
+        with pytest.raises(RuntimeError, match="numeric token-id keys"):
+            teacher.infer_topk([{"raw_bytes": b"hello", "top_k": 2}])
+    finally:
+        teacher.close()
+
+def test_hf_runtime_capabilities_and_tokenizer_diagnostics() -> None:
+    teacher = HFCausalLMTeacher(model_name_or_path="dummy", max_context=16, batch_size=1)
+    capabilities = teacher.capabilities()
+    assert capabilities.backend_type == "hf"
+    assert capabilities.supports_topk is True
+    assert capabilities.supports_structured is True
+    assert capabilities.supports_tokenizer_diagnostics is True
+
+    class _DiagTeacher(HFCausalLMTeacher):
+        def token_lengths(self, texts: list[str]) -> list[int]:
+            return [len(text) for text in texts]
+
+    diag_teacher = _DiagTeacher(model_name_or_path="dummy", max_context=16, batch_size=1)
+    records = [{"raw_bytes": b"abc"}, {"teacher_input_text": "xy"}]
+    out = diag_teacher.tokenizer_diagnostics(records)
+    assert out == [
+        {"teacher_input_token_length": 3, "teacher_input_byte_length": 3},
+        {"teacher_input_token_length": 2, "teacher_input_byte_length": 2},
+    ]
+
+
+def test_vllm_runtime_capabilities_and_tokenizer_diagnostics() -> None:
+    teacher = VLLMCausalLMTeacher(model_name_or_path="dummy", max_context=16, batch_size=1)
+    capabilities = teacher.capabilities()
+    assert capabilities.backend_type == "vllm"
+    assert capabilities.supports_topk is True
+    assert capabilities.supports_structured is False
+    assert capabilities.supports_tokenizer_diagnostics is True
+
+    class _DiagTeacher(VLLMCausalLMTeacher):
+        def token_lengths(self, texts: list[str]) -> list[int]:
+            return [len(text) for text in texts]
+
+        def _truncate_prompt(self, text: str) -> str:
+            return text
+
+    diag_teacher = _DiagTeacher(model_name_or_path="dummy", max_context=16, batch_size=1)
+    records = [{"raw_bytes": b"abc"}, {"teacher_input_text": "xy"}]
+    out = diag_teacher.tokenizer_diagnostics(records)
+    assert out == [
+        {"teacher_input_token_length": 3, "teacher_input_byte_length": 3},
+        {"teacher_input_token_length": 2, "teacher_input_byte_length": 2},
+    ]
 
 def test_hf_backend_smoke_topk_semantics() -> None:
     pytest.importorskip("torch")

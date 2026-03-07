@@ -12,15 +12,9 @@ preserve_document_boundaries = true
 normalize_newlines = true
 
 [output]
-output_dir = "./data/processed"
+output_dir = "./data/processed_hf"
 format = "jsonl"
 compression = "zstd"
-
-# Default example now uses explicit runtime backend selection.
-# Switch to the dedicated backend examples for ready-to-run variants:
-# - configs/examples/hf_backend.toml
-# - configs/examples/vllm_backend.toml
-# - configs/examples/llamacpp_server_backend.toml
 
 [stage_a]
 enabled = true

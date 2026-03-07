@@ -1,0 +1,51 @@
+[data]
+input_path = "./data/raw"
+file_glob = "*.txt"
+encoding = "utf-8"
+chunk_bytes = 4096
+overlap_bytes = 256
+eval_fraction = 0.1
+seed = 42
+
+[input]
+preserve_document_boundaries = true
+normalize_newlines = true
+
+[output]
+output_dir = "./data/processed_vllm"
+format = "jsonl"
+compression = "zstd"
+
+[stage_a]
+enabled = true
+teacher_name = "vllm_causal_lm"
+backend_type = "vllm"
+mode = "topk_logits"
+top_k = 32
+temperature = 1.0
+model_name_or_path = "Qwen/Qwen2.5-0.5B"
+tensor_parallel_size = 1
+dtype = "auto"
+max_context = 2048
+batch_size = 1
+gpu_memory_utilization = 0.9
+trust_remote_code = false
+
+[stage_b]
+enabled = true
+teacher_name = "vllm_causal_lm"
+backend_type = "vllm"
+mode = "long_context"
+top_k = 32
+temperature = 1.0
+context_window = 8192
+stride = 2048
+max_teacher_context = 4096
+
+[stage_c]
+enabled = true
+teacher_name = "vllm_causal_lm"
+backend_type = "vllm"
+mode = "topk_logits"
+top_k = 16
+temperature = 0.7

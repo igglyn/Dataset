@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Compare two distillation dataset outputs in a terminal-friendly format."""
+"""Compare two distillation dataset outputs in a terminal-friendly format.
+
+For tiny backend sanity checks before full dataset builds, prefer
+`scripts/validate_backend_parity.py`.
+"""
 
 from __future__ import annotations
 

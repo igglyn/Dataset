@@ -15,6 +15,7 @@ from distill_factory.config.schema import load_config
 from distill_factory.data.chunking import chunk_documents
 from distill_factory.data.ingest import ingest_documents
 from distill_factory.teachers.hf_causal_lm import HFCausalLMTeacher
+from distill_factory.teachers.llamacpp_server import LlamaCppServerTeacher
 from distill_factory.teachers.vllm_causal_lm import VLLMCausalLMTeacher
 
 
@@ -58,13 +59,24 @@ def _build_teacher(cfg: object, backend: str):
             trust_remote_code=cfg.stage_a.trust_remote_code,
         ), int(cfg.stage_a.max_context), str(cfg.stage_a.model_name_or_path)
 
-    raise ValueError("--backend must be 'hf' or 'vllm'")
+    if backend == "llamacpp_server":
+        model_label = cfg.stage_a.llama_model_hint if cfg.stage_a.llama_model_hint else cfg.stage_a.llama_base_url
+        return LlamaCppServerTeacher(
+            base_url=cfg.stage_a.llama_base_url,
+            model_hint=cfg.stage_a.llama_model_hint,
+            request_timeout=cfg.stage_a.llama_request_timeout,
+            max_context=cfg.stage_a.max_context,
+            default_top_k=cfg.stage_a.top_k,
+            default_temperature=cfg.stage_a.temperature,
+        ), int(cfg.stage_a.max_context), str(model_label)
+
+    raise ValueError("--backend must be 'hf', 'vllm', or 'llamacpp_server'")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Measure tokenizer cost on a small sampled subset.")
     parser.add_argument("--config", default="configs/examples/default.toml", help="Path to pipeline config.")
-    parser.add_argument("--backend", choices=["hf", "vllm"], default="hf", help="Tokenizer backend to use.")
+    parser.add_argument("--backend", choices=["hf", "vllm", "llamacpp_server"], default="hf", help="Tokenizer backend to use.")
     parser.add_argument("--sample-records", type=int, default=32, help="Number of chunk records to sample.")
     parser.add_argument("--input-path", default=None, help="Optional override for [data].input_path.")
     parser.add_argument("--file-glob", default=None, help="Optional override for [data].file_glob.")
@@ -81,6 +93,10 @@ def main() -> None:
 
     try:
         token_lengths = teacher.token_lengths(texts)
+    except NotImplementedError as exc:
+        raise RuntimeError(
+            f"Tokenization diagnostics are unavailable for backend '{args.backend}' with current runtime settings: {exc}"
+        ) from exc
     finally:
         teacher.close()
 

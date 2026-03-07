@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, TypedDict
 
+from .runtime_base import RuntimeCapabilities, TeacherRuntime
+
 
 class LongContextInput(TypedDict, total=False):
     """Common long-context payload fields shared by teacher backends."""
@@ -63,9 +65,46 @@ class Teacher(ABC):
         """Whether this teacher backend supports stage-B long-context handling."""
         return False
 
+    def supports_tokenizer_diagnostics(self) -> bool:
+        """Whether this teacher backend supports tokenizer-only diagnostics."""
+        return False
+
     @abstractmethod
     def close(self) -> None:
         """Release any resources held by this teacher."""
+
+
+class RuntimeBackedTeacher(Teacher):
+    """Teacher helper that delegates execution to a runtime backend.
+
+    This keeps teacher-facing semantics stable while allowing execution to move
+    across local runtimes (HF/vLLM) or remote transports.
+    """
+
+    def __init__(self, runtime: TeacherRuntime) -> None:
+        self.runtime = runtime
+
+    def runtime_capabilities(self) -> RuntimeCapabilities:
+        """Expose backend capability flags for diagnostics and validation."""
+        return self.runtime.capabilities()
+
+    def prepare(self) -> None:
+        self.runtime.startup_self_check()
+
+    def infer_topk(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return self.runtime.infer_topk(records)
+
+    def infer_structured(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return self.runtime.infer_structured(records)
+
+    def supports_topk(self) -> bool:
+        return self.runtime.capabilities().supports_topk
+
+    def supports_structured(self) -> bool:
+        return self.runtime.capabilities().supports_structured
+
+    def close(self) -> None:
+        self.runtime.close()
 
 
 class DummyTeacher(Teacher):
