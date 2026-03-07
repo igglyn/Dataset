@@ -212,6 +212,26 @@ def _entropy_stats(records: list[dict[str, Any]]) -> tuple[float | None, float |
     return sum(vals) / len(vals), min(vals), max(vals)
 
 
+def _tokenization_cost_stats(records: list[dict[str, Any]]) -> tuple[float | None, float | None, int | None, int | None]:
+    token_lengths = [
+        int(r["teacher_input_token_length"])
+        for r in records
+        if isinstance(r.get("teacher_input_token_length"), (int, float))
+    ]
+    if not token_lengths:
+        return None, None, None, None
+
+    byte_lengths = [
+        int(r.get("teacher_input_byte_length", 0))
+        for r in records
+        if isinstance(r.get("teacher_input_byte_length"), (int, float))
+    ]
+    avg_tokens = sum(token_lengths) / len(token_lengths)
+    avg_bytes = (sum(byte_lengths) / len(byte_lengths)) if byte_lengths else None
+    ratio = (avg_bytes / avg_tokens) if (avg_bytes is not None and avg_tokens > 0) else None
+    return avg_tokens, ratio, min(token_lengths), max(token_lengths)
+
+
 def _avg_topk_width(records: list[dict[str, Any]]) -> float:
     widths = [_topk_width(r.get("top_k_ids")) for r in records if r.get("top_k_ids") is not None]
     return (sum(widths) / len(widths)) if widths else 0.0
@@ -346,6 +366,7 @@ def _print_metrics_export(metrics: dict[str, Any] | None, metrics_path: Path, sh
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inspect a distillation dataset JSONL file or shard directory.")
     parser.add_argument("--path", required=True, help="Path to dataset JSONL file or directory.")
+    parser.add_argument("--stage", default=None, help="Optional stage filter before computing summary stats (for example: stage_a).")
     parser.add_argument("--histogram-bins", type=int, default=10, help="Number of deterministic entropy histogram bins.")
     parser.add_argument("--show-histogram", action="store_true", help="Print histogram bins from metrics export.")
     parser.add_argument("--sample-count", type=int, default=3, help="Number of sample records to export when --export-samples is set.")
@@ -356,10 +377,13 @@ def main() -> None:
     args = parser.parse_args()
 
     records = read_jsonl_records(args.path)
+    if args.stage is not None:
+        records = [r for r in records if str(r.get("stage_name", "")) == args.stage]
 
     print("=== Dataset Inspection ===")
     print(f"Path: {args.path}")
     print(f"Record count: {len(records)}")
+    print(f"Stage filter: {args.stage}")
     print("Compare with another run: python scripts/compare_datasets.py --left <path_a> --right <path_b>")
 
     _print_shard_stats(args.path)
@@ -407,6 +431,13 @@ def main() -> None:
     print(f"  Max entropy: {'n/a' if max_entropy is None else f'{max_entropy:.4f}'}")
     print(f"  Average chunk length (bytes): {_avg_chunk_len(records):.2f}")
     print(f"  Average top-k width populated: {_avg_topk_width(records):.2f}")
+
+    avg_tokens, bytes_per_token, min_tokens, max_tokens = _tokenization_cost_stats(records)
+    print("\nTokenization-cost diagnostics")
+    print(f"  Average teacher input tokens: {'n/a' if avg_tokens is None else f'{avg_tokens:.2f}'}")
+    print(f"  Min teacher input tokens: {'n/a' if min_tokens is None else min_tokens}")
+    print(f"  Max teacher input tokens: {'n/a' if max_tokens is None else max_tokens}")
+    print(f"  Average bytes/token ratio: {'n/a' if bytes_per_token is None else f'{bytes_per_token:.4f}'}")
 
     _print_teacher_sanity_if_present(records)
 

@@ -32,6 +32,30 @@ def _parse_template_kwargs(raw: str | None) -> dict[str, Any]:
     return parsed
 
 
+
+
+def build_preview_prompt(
+    *,
+    template_name: str,
+    input_text: str,
+    template_kwargs: dict[str, Any] | None = None,
+    doc_id: str = "preview_doc",
+    chunk_index: int = 0,
+    deterministic: bool = True,
+) -> dict[str, Any]:
+    """Build preview payload using same prompt path as Stage C."""
+    record = {
+        "doc_id": str(doc_id),
+        "chunk_index": int(chunk_index),
+        "raw_bytes": input_text.encode("utf-8"),
+    }
+    return build_prompt_record(
+        record=record,
+        template_name=str(template_name),
+        template_kwargs=dict(template_kwargs or {}),
+        deterministic=bool(deterministic),
+    )
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Preview a stage-C structured-output prompt template.")
     parser.add_argument("--template-name", required=True, choices=list_prompt_template_names())
@@ -52,16 +76,12 @@ def main() -> None:
     kwargs = _parse_template_kwargs(args.template_kwargs_json)
     deterministic = False if args.non_deterministic else bool(args.deterministic)
 
-    record = {
-        "doc_id": str(args.doc_id),
-        "chunk_index": int(args.chunk_index),
-        "raw_bytes": text.encode("utf-8"),
-    }
-
-    built = build_prompt_record(
-        record=record,
+    built = build_preview_prompt(
         template_name=str(args.template_name),
+        input_text=text,
         template_kwargs=kwargs,
+        doc_id=str(args.doc_id),
+        chunk_index=int(args.chunk_index),
         deterministic=deterministic,
     )
 

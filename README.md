@@ -148,6 +148,38 @@ Entropy is a practical quality signal for distillation:
 
 The dataset inspector also prints these metrics from stored records, and prints embedded stage summaries when present.
 
+## Tokenization cost quick-check
+
+Estimate tokenizer context cost on a small sample before large runs:
+
+```bash
+python scripts/measure_tokenization_cost.py --config configs/examples/default.toml --backend hf --sample-records 32
+```
+
+Use `--backend vllm` to estimate using the vLLM teacher tokenizer path.
+
+## Build preflight checklist convenience
+
+Before non-dry-run builds, `scripts/build_dataset.py` now prints a short preflight checklist
+(config path, enabled stages/teachers, output/resume/shard settings, dry-run/stop-after-stage,
+and longdoc-eval status) to reduce accidental mis-launches on large runs.
+
+## Pipeline benchmark (small validation run)
+
+Use this benchmark script to measure where time is spent (ingestion/chunking/splitting/stages/writing):
+
+```bash
+python scripts/benchmark_pipeline.py --config configs/examples/default.toml --records 16
+```
+
+## Stage A bring-up
+
+Run a tiny, reproducible Stage A validation before large jobs:
+
+```bash
+python scripts/validate_stage_a.py --config configs/examples/default.toml --records 16
+```
+
 ## Inspecting generated datasets
 
 Use the inspection CLI to quickly sanity-check output JSONL files:

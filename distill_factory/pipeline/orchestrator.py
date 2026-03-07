@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 from random import Random
 from typing import Any
 
@@ -164,11 +165,13 @@ def _run_enabled_stages_with_history(
     failure_output_dir: Path | None = None,
     skip_stats: dict[str, int] | None = None,
     stop_after_stage: str | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], dict[str, float]]:
     out = records
     history: dict[str, list[dict[str, Any]]] = {}
+    stage_seconds: dict[str, float] = {"stage_a": 0.0, "stage_b": 0.0, "stage_c": 0.0}
 
     if cfg.stage_a.enabled:
+        t_stage = perf_counter()
         out = _apply_stage_mixture(
             out,
             stage_name="stage_a",
@@ -181,10 +184,12 @@ def _run_enabled_stages_with_history(
             skip_stats=skip_stats,
         )
         history["stage_a"] = _clone_records(out)
+        stage_seconds["stage_a"] += perf_counter() - t_stage
         if stop_after_stage == "stage_a":
-            return out, history
+            return out, history, stage_seconds
 
     if cfg.stage_b.enabled:
+        t_stage = perf_counter()
         out = _apply_stage_mixture(
             out,
             stage_name="stage_b",
@@ -197,10 +202,12 @@ def _run_enabled_stages_with_history(
             skip_stats=skip_stats,
         )
         history["stage_b"] = _clone_records(out)
+        stage_seconds["stage_b"] += perf_counter() - t_stage
         if stop_after_stage == "stage_b":
-            return out, history
+            return out, history, stage_seconds
 
     if cfg.stage_c.enabled:
+        t_stage = perf_counter()
         out = _apply_stage_mixture(
             out,
             stage_name="stage_c",
@@ -213,10 +220,11 @@ def _run_enabled_stages_with_history(
             skip_stats=skip_stats,
         )
         history["stage_c"] = _clone_records(out)
+        stage_seconds["stage_c"] += perf_counter() - t_stage
         if stop_after_stage == "stage_c":
-            return out, history
+            return out, history, stage_seconds
 
-    return out, history
+    return out, history, stage_seconds
 
 
 def _apply_static_curriculum_mix(
@@ -342,6 +350,10 @@ def _write_split(
     resume: bool,
     skipped_records_count: int = 0,
 ) -> tuple[int, int, list[str]]:
+    # Order of operations (resume vs de-duplication):
+    # 1) Orchestrator de-duplicates current in-memory records first.
+    # 2) Storage layer de-duplicates again against on-disk signatures when append/resume is enabled.
+    # This guarantees interrupted/repeated resume writes do not duplicate already persisted signatures.
     unique_records, duplicates_skipped = deduplicate_records(records)
     samples = _to_distilled_samples(unique_records)
 
@@ -391,6 +403,7 @@ def run_pipeline(config_path: str) -> dict[str, Any]:
             raise ValueError(message or "resume state is incompatible with current config")
         resume_warning = message
 
+    t_ingest = perf_counter()
     docs = ingest_documents(
         input_path=cfg.data.input_path,
         file_glob=cfg.data.file_glob,
@@ -398,6 +411,9 @@ def run_pipeline(config_path: str) -> dict[str, Any]:
         normalize_newlines=cfg.input.normalize_newlines,
     )
 
+    ingest_seconds = perf_counter() - t_ingest
+
+    t_chunk = perf_counter()
     chunks = chunk_documents(
         documents=docs,
         chunk_bytes=cfg.data.chunk_bytes,
@@ -405,12 +421,17 @@ def run_pipeline(config_path: str) -> dict[str, Any]:
         encoding=cfg.data.encoding,
     )
 
+    chunking_seconds = perf_counter() - t_chunk
+
+    t_split = perf_counter()
     train_records, eval_records = split_records_by_doc_id(
         chunks,
         eval_fraction=cfg.data.eval_fraction,
         seed=cfg.data.seed,
         method="shuffle",
     )
+
+    splitting_seconds = perf_counter() - t_split
 
     for record in train_records:
         record["split"] = "train"
@@ -421,7 +442,7 @@ def run_pipeline(config_path: str) -> dict[str, Any]:
         train_records = _deterministic_subsample(train_records, cfg.output.dry_run_max_records, seed=cfg.data.seed + 1)
         eval_records = _deterministic_subsample(eval_records, cfg.output.dry_run_max_records, seed=cfg.data.seed + 2)
 
-    train_final, train_history = _run_enabled_stages_with_history(
+    train_final, train_history, train_stage_seconds = _run_enabled_stages_with_history(
         train_records,
         cfg,
         dry_run=cfg.output.dry_run,
@@ -429,7 +450,7 @@ def run_pipeline(config_path: str) -> dict[str, Any]:
         skip_stats=skip_stats,
         stop_after_stage=cfg.output.stop_after_stage,
     )
-    eval_final, eval_history = _run_enabled_stages_with_history(
+    eval_final, eval_history, eval_stage_seconds = _run_enabled_stages_with_history(
         eval_records,
         cfg,
         dry_run=cfg.output.dry_run,
@@ -467,6 +488,10 @@ def run_pipeline(config_path: str) -> dict[str, Any]:
         seed=cfg.data.seed + 402,
     )
 
+    stage_a_seconds = float(train_stage_seconds.get("stage_a", 0.0) + eval_stage_seconds.get("stage_a", 0.0))
+    stage_b_seconds = float(train_stage_seconds.get("stage_b", 0.0) + eval_stage_seconds.get("stage_b", 0.0))
+    stage_c_seconds = float(train_stage_seconds.get("stage_c", 0.0) + eval_stage_seconds.get("stage_c", 0.0))
+
     ext = "jsonl" if cfg.output.format == "jsonl" else "parquet"
     train_path = output_dir / f"train.{ext}"
     eval_path = output_dir / f"eval.{ext}"
@@ -478,6 +503,8 @@ def run_pipeline(config_path: str) -> dict[str, Any]:
 
     train_done = bool((resume_state or {}).get("split_progress", {}).get("train", {}).get("completed", False))
     eval_done = bool((resume_state or {}).get("split_progress", {}).get("eval", {}).get("completed", False))
+
+    t_write = perf_counter()
 
     if cfg.output.resume and train_done:
         train_written = int((resume_state or {}).get("split_progress", {}).get("train", {}).get("record_count", 0))
@@ -525,6 +552,9 @@ def run_pipeline(config_path: str) -> dict[str, Any]:
             resume_state["split_progress"] = progress
             write_resume_state(output_dir, resume_state)
 
+    writing_seconds = perf_counter() - t_write
+    total_runtime_seconds = ingest_seconds + chunking_seconds + splitting_seconds + stage_a_seconds + stage_b_seconds + stage_c_seconds + writing_seconds
+
     return {
         "train_path": str(train_path),
         "eval_path": str(eval_path),
@@ -537,6 +567,17 @@ def run_pipeline(config_path: str) -> dict[str, Any]:
         "stage_a_teachers": teacher_names["stage_a"],
         "stage_b_teachers": teacher_names["stage_b"],
         "stage_c_teachers": teacher_names["stage_c"],
+        "timing": {
+            "ingestion_seconds": float(ingest_seconds),
+            "chunking_seconds": float(chunking_seconds),
+            "splitting_seconds": float(splitting_seconds),
+            "stage_a_seconds": stage_a_seconds,
+            "stage_b_seconds": stage_b_seconds,
+            "stage_c_seconds": stage_c_seconds,
+            "teacher_inference_seconds": float(stage_a_seconds + stage_b_seconds + stage_c_seconds),
+            "writing_seconds": float(writing_seconds),
+            "total_runtime_seconds": float(total_runtime_seconds),
+        },
         "train_stage_fractions": train_stage_fractions,
         "eval_stage_fractions": eval_stage_fractions,
         "resume_enabled": bool(cfg.output.resume),

@@ -2,7 +2,7 @@
 
 Policy notes:
 - Input `raw_bytes` are decoded to UTF-8 text with `errors="replace"` before tokenization.
-- `infer_topk` returns per-token-position top-k ids/logprobs from next-token logits.
+- `infer_topk` returns per-token-position top-k ids/logprobs from next-token logits, sorted by descending logprob.
 - Entropy policy is pooled: mean entropy across token positions for each record.
 - Hidden summary policy (optional): mean pool of final hidden states over non-padding tokens.
 - `infer_structured` uses deterministic generation (`do_sample=False`) and emits schema:
@@ -11,6 +11,7 @@ Policy notes:
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 try:
@@ -154,6 +155,67 @@ class HFCausalLMTeacher(Teacher):
             return raw
         return str(raw)
 
+    def _tokenizer_vocab_size(self) -> int | None:
+        if self._tokenizer is None:
+            return None
+        vocab_size = getattr(self._tokenizer, "vocab_size", None)
+        if isinstance(vocab_size, int) and vocab_size > 0:
+            return vocab_size
+        get_vocab = getattr(self._tokenizer, "get_vocab", None)
+        if callable(get_vocab):
+            vocab = get_vocab()
+            if isinstance(vocab, dict):
+                return len(vocab)
+        return None
+
+    def _validate_topk_semantics(
+        self,
+        *,
+        top_k_ids: list[list[int]],
+        top_k_logprobs: list[list[float]],
+        entropy: float,
+        token_length: int,
+    ) -> None:
+        # HF policy: we emit next-token distributions for each observed prompt token,
+        # so expected top-k rows are `max(token_length - 1, 0)`.
+        expected_positions = max(int(token_length) - 1, 0)
+        if len(top_k_ids) != len(top_k_logprobs):
+            raise RuntimeError("HF top-k semantics violation: id/logprob row count mismatch")
+        if len(top_k_ids) != expected_positions:
+            raise RuntimeError(
+                f"HF top-k semantics violation: expected {expected_positions} rows, got {len(top_k_ids)}"
+            )
+
+        vocab_size = self._tokenizer_vocab_size()
+        for row_ids, row_lps in zip(top_k_ids, top_k_logprobs):
+            if len(row_ids) != len(row_lps):
+                raise RuntimeError("HF top-k semantics violation: id/logprob width mismatch")
+            if any(not math.isfinite(float(lp)) for lp in row_lps):
+                raise RuntimeError("HF top-k semantics violation: encountered non-finite logprob")
+            if vocab_size is not None and any((tid < 0 or tid >= vocab_size) for tid in row_ids):
+                raise RuntimeError("HF top-k semantics violation: token id out of tokenizer vocab range")
+
+        if (not math.isfinite(float(entropy))) or float(entropy) < 0.0:
+            raise RuntimeError("HF top-k semantics violation: entropy must be finite and non-negative")
+
+
+    def prepare_tokenizer_only(self) -> None:
+        """Load tokenizer without model weights for tokenization-cost diagnostics."""
+        if AutoTokenizer is None:
+            raise ModuleNotFoundError("transformers is required for HFCausalLMTeacher tokenizer diagnostics.")
+        if self._tokenizer is None:
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path)
+
+    def token_lengths(self, texts: list[str]) -> list[int]:
+        """Return token counts for input texts without running teacher inference."""
+        self.prepare_tokenizer_only()
+        assert self._tokenizer is not None
+        lengths: list[int] = []
+        for text in texts:
+            token_ids = self._tokenizer.encode(str(text), truncation=True, max_length=self.max_context)
+            lengths.append(len(token_ids))
+        return lengths
+
     def infer_topk(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if torch is None or self._tokenizer is None or self._model is None:
             raise RuntimeError("Teacher must be prepared before inference.")
@@ -201,17 +263,32 @@ class HFCausalLMTeacher(Teacher):
 
                 for i in range(logprobs.shape[0]):
                     k = int(batch[i].get("top_k", 5))
+                    token_length = int(tokenized["attention_mask"][i].sum().item()) if "attention_mask" in tokenized else int(logprobs.shape[1] + 1)
+                    effective_positions = max(token_length - 1, 0)
+
+                    effective_logprobs = logprobs[i, :effective_positions, :]
+                    effective_entropy = ent[i, :effective_positions]
                     top_logprobs, top_ids = torch.topk(
-                        logprobs[i],
+                        effective_logprobs,
                         k=min(k, logprobs.shape[-1]),
                         dim=-1,
+                        sorted=True,
                     )
 
-                    token_length = int(tokenized["attention_mask"][i].sum().item()) if "attention_mask" in tokenized else int(top_ids.shape[0] + 1)
+                    entropy_value = float(effective_entropy.mean().item()) if effective_positions > 0 else 0.0
+                    top_k_ids = top_ids.cpu().tolist()
+                    top_k_logprobs = top_logprobs.cpu().tolist()
+                    self._validate_topk_semantics(
+                        top_k_ids=top_k_ids,
+                        top_k_logprobs=top_k_logprobs,
+                        entropy=entropy_value,
+                        token_length=token_length,
+                    )
+
                     out_item = {
-                        "top_k_ids": top_ids.cpu().tolist(),
-                        "top_k_logprobs": top_logprobs.cpu().tolist(),
-                        "entropy": float(ent[i].mean().item()),
+                        "top_k_ids": top_k_ids,
+                        "top_k_logprobs": top_k_logprobs,
+                        "entropy": entropy_value,
                         "teacher_input_token_length": token_length,
                         "teacher_input_byte_length": int(input_byte_lengths[i]),
                     }

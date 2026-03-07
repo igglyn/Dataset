@@ -200,3 +200,23 @@ def log_stage_metrics(records: list[dict[str, Any]], stage_name: str, logger_nam
         summary["metrics_export_path"] = metrics_path
 
     return summary
+
+
+def format_timing_report(summary: dict[str, Any]) -> list[str]:
+    """Return human-readable timing lines from pipeline summary timing payload."""
+    timing = summary.get("timing") if isinstance(summary, dict) else None
+    if not isinstance(timing, dict):
+        return ["timing: unavailable"]
+
+    lines = [
+        f"ingestion_seconds={float(timing.get('ingestion_seconds', 0.0)):.4f}",
+        f"chunking_seconds={float(timing.get('chunking_seconds', 0.0)):.4f}",
+        f"splitting_seconds={float(timing.get('splitting_seconds', 0.0)):.4f}",
+        f"stage_a_seconds={float(timing.get('stage_a_seconds', 0.0)):.4f}",
+        f"stage_b_seconds={float(timing.get('stage_b_seconds', 0.0)):.4f}",
+        f"stage_c_seconds={float(timing.get('stage_c_seconds', 0.0)):.4f}",
+        f"teacher_inference_seconds={float(timing.get('teacher_inference_seconds', 0.0)):.4f}",
+        f"writing_seconds={float(timing.get('writing_seconds', 0.0)):.4f}",
+        f"total_runtime_seconds={float(timing.get('total_runtime_seconds', 0.0)):.4f}",
+    ]
+    return lines

@@ -2,7 +2,7 @@
 
 Policy notes:
 - Input `raw_bytes` are decoded to UTF-8 text with `errors="replace"` before tokenization.
-- `infer_topk` returns per-token-position top-k ids/logprobs from prompt token logprobs.
+- `infer_topk` returns per-token-position top-k ids/logprobs from prompt token logprobs, sorted by descending logprob.
 - Entropy policy is pooled: mean entropy across token positions per record.
 - Entropy is computed from the available top-k distribution (renormalized over returned k).
 """
@@ -20,6 +20,11 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     LLM = None
     SamplingParams = None
+
+try:
+    from transformers import AutoTokenizer
+except ModuleNotFoundError:  # pragma: no cover
+    AutoTokenizer = None
 
 
 class VLLMCausalLMTeacher(Teacher):
@@ -182,6 +187,81 @@ class VLLMCausalLMTeacher(Teacher):
             return 0.0
         return float(sum(entropies) / len(entropies))
 
+    def _tokenizer_vocab_size(self) -> int | None:
+        if self._tokenizer is None:
+            return None
+        vocab_size = getattr(self._tokenizer, "vocab_size", None)
+        if isinstance(vocab_size, int) and vocab_size > 0:
+            return vocab_size
+        get_vocab = getattr(self._tokenizer, "get_vocab", None)
+        if callable(get_vocab):
+            vocab = get_vocab()
+            if isinstance(vocab, dict):
+                return len(vocab)
+        return None
+
+    def _validate_topk_semantics(
+        self,
+        *,
+        top_k_ids: list[list[int]],
+        top_k_logprobs: list[list[float]],
+        entropy: float,
+        token_length: int,
+    ) -> None:
+        if len(top_k_ids) != len(top_k_logprobs):
+            raise RuntimeError("vLLM top-k semantics violation: id/logprob row count mismatch")
+
+        # vLLM policy: prompt_logprobs are returned for prompt token positions where
+        # token maps are available. This is typically token_length - 1 rows.
+        expected_max_positions = max(int(token_length) - 1, 0)
+        if len(top_k_ids) > expected_max_positions:
+            raise RuntimeError(
+                f"vLLM top-k semantics violation: expected <= {expected_max_positions} rows, got {len(top_k_ids)}"
+            )
+
+        vocab_size = self._tokenizer_vocab_size()
+        for row_ids, row_lps in zip(top_k_ids, top_k_logprobs):
+            if len(row_ids) != len(row_lps):
+                raise RuntimeError("vLLM top-k semantics violation: id/logprob width mismatch")
+            if any(not math.isfinite(float(lp)) for lp in row_lps):
+                raise RuntimeError("vLLM top-k semantics violation: encountered non-finite logprob")
+            if any(float(row_lps[j]) < float(row_lps[j + 1]) for j in range(len(row_lps) - 1)):
+                raise RuntimeError("vLLM top-k semantics violation: top-k logprobs are not sorted descending")
+            if vocab_size is not None and any((tid < 0 or tid >= vocab_size) for tid in row_ids):
+                raise RuntimeError("vLLM top-k semantics violation: token id out of tokenizer vocab range")
+
+        if (not math.isfinite(float(entropy))) or float(entropy) < 0.0:
+            raise RuntimeError("vLLM top-k semantics violation: entropy must be finite and non-negative")
+
+
+    def prepare_tokenizer_only(self) -> None:
+        """Load tokenizer for tokenization-cost diagnostics without inference."""
+        if self._tokenizer is not None:
+            return
+
+        if AutoTokenizer is not None:
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path)
+            return
+
+        if LLM is None or SamplingParams is None:
+            raise ModuleNotFoundError(
+                "Tokenization diagnostics require either transformers (AutoTokenizer) or vllm to be installed."
+            )
+
+        # Fallback when only vLLM is available; this is heavier than tokenizer-only.
+        self.prepare()
+
+    def token_lengths(self, texts: list[str]) -> list[int]:
+        """Return token counts for input texts without running teacher inference."""
+        self.prepare_tokenizer_only()
+        assert self._tokenizer is not None
+        lengths: list[int] = []
+        for text in texts:
+            token_ids = self._tokenizer.encode(str(text))
+            token_ids = token_ids[: self.max_context]
+            lengths.append(len(token_ids))
+        return lengths
+
     def infer_topk(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if self._llm is None or self._tokenizer is None or SamplingParams is None:
             raise RuntimeError("Teacher must be prepared before inference.")
@@ -210,12 +290,21 @@ class VLLMCausalLMTeacher(Teacher):
                         per_pos_ids.append(ids[:top_k])
                         per_pos_lps.append(lps[:top_k])
 
+                token_length = int(prompt_token_lengths[idx]) if idx < len(prompt_token_lengths) else 0
+                entropy_value = self._pooled_entropy(per_pos_lps)
+                self._validate_topk_semantics(
+                    top_k_ids=per_pos_ids,
+                    top_k_logprobs=per_pos_lps,
+                    entropy=entropy_value,
+                    token_length=token_length,
+                )
+
                 outputs.append(
                     {
                         "top_k_ids": per_pos_ids,
                         "top_k_logprobs": per_pos_lps,
-                        "entropy": self._pooled_entropy(per_pos_lps),
-                        "teacher_input_token_length": int(prompt_token_lengths[idx]) if idx < len(prompt_token_lengths) else None,
+                        "entropy": entropy_value,
+                        "teacher_input_token_length": token_length,
                         "teacher_input_byte_length": int(prompt_byte_lengths[idx]) if idx < len(prompt_byte_lengths) else None,
                     }
                 )

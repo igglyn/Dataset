@@ -222,6 +222,10 @@ def write_jsonl(
     else:
         unique_records = list(records)
 
+    # De-duplication order:
+    # - `_deduplicate_samples` removes duplicates inside this write batch.
+    # - `_split_new_records` (append mode) then filters against existing on-disk signatures.
+    # This two-step order keeps append/resume idempotent across repeated runs.
     if max_records_per_shard <= 0:
         existing_paths = [p] if append and p.exists() else []
         existing_signatures = _load_existing_signatures(existing_paths) if append else set()
