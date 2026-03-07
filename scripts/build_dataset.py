@@ -37,6 +37,41 @@ def _run_merge_mode(merge_inputs: list[str], merge_ratios: list[float] | None, m
     print(f"Merge complete: records={len(samples)} output={out_path}")
 
 
+
+
+def _print_preflight_checklist(config_path: str) -> None:
+    cfg = load_config(config_path)
+    enabled_stages = [
+        name
+        for name, enabled in [
+            ("stage_a", bool(cfg.stage_a.enabled)),
+            ("stage_b", bool(cfg.stage_b.enabled)),
+            ("stage_c", bool(cfg.stage_c.enabled)),
+        ]
+        if enabled
+    ]
+    teachers = {
+        "stage_a": [m.teacher_name for m in cfg.stage_a.teacher_mixture] if cfg.stage_a.enabled else [],
+        "stage_b": [m.teacher_name for m in cfg.stage_b.teacher_mixture] if cfg.stage_b.enabled else [],
+        "stage_c": [m.teacher_name for m in cfg.stage_c.teacher_mixture] if cfg.stage_c.enabled else [],
+    }
+    longdoc_enabled = float(cfg.data.eval_longdoc_fraction) > 0.0
+
+    print("Preflight checklist")
+    print(f"  config_path: {config_path}")
+    print(f"  enabled_stages: {enabled_stages if enabled_stages else ['(none)']}")
+    print(f"  selected_teachers: {teachers}")
+    print(f"  output_dir: {cfg.output.output_dir}")
+    print(f"  resume_mode: enabled={cfg.output.resume} policy={cfg.output.resume_policy}")
+    print(
+        "  shard_settings: "
+        f"max_records_per_shard={cfg.output.max_records_per_shard} "
+        f"shard_prefix={cfg.output.shard_prefix}"
+    )
+    print(f"  dry_run: {cfg.output.dry_run}")
+    print(f"  stop_after_stage: {cfg.output.stop_after_stage}")
+    print(f"  longdoc_eval_enabled: {longdoc_enabled} (eval_longdoc_fraction={cfg.data.eval_longdoc_fraction})")
+
 def _apply_longdoc_eval_split_if_needed(config_path: str, summary: dict[str, object]) -> dict[str, object]:
     cfg = load_config(config_path)
     if float(cfg.data.eval_longdoc_fraction) <= 0.0:
@@ -146,6 +181,10 @@ def main() -> None:
     if not args.config:
         raise ValueError("--config is required when not using --merge-inputs")
 
+    cfg = load_config(args.config)
+    if not bool(cfg.output.dry_run):
+        _print_preflight_checklist(args.config)
+
     summary = run_pipeline(args.config)
     summary = _apply_longdoc_eval_split_if_needed(args.config, summary)
     summary = _apply_sharding_if_needed(args.config, summary)
@@ -158,6 +197,8 @@ def main() -> None:
         f"stage_a_teachers={summary.get('stage_a_teachers')} "
         f"stage_b_teachers={summary.get('stage_b_teachers')} "
         f"stage_c_teachers={summary.get('stage_c_teachers')} "
+        f"stop_after_stage={summary.get('stop_after_stage')} "
+        f"skipped_records={summary.get('skipped_records')} "
         f"train_shards={summary.get('train_shards')} eval_shards={summary.get('eval_shards')} eval_longdoc_shards={summary.get('eval_longdoc_shards')}"
     )
 

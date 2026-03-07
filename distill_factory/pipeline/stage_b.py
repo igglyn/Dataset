@@ -19,6 +19,38 @@ def _dry_run_topk_output(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validate_stage_b_window_metadata(
+    *,
+    record: dict[str, Any],
+    view: dict[str, Any],
+    prepared: dict[str, Any],
+) -> None:
+    target_start = int(record["byte_start"])
+    target_end = int(record["byte_end"])
+    window_start = int(view["window_byte_start"])
+    window_end = int(view["window_byte_end"])
+    prepared_start = int(prepared["target_start_offset"])
+    prepared_end = int(prepared["target_end_offset"])
+    teacher_bytes = bytes(prepared["teacher_input_bytes"])
+
+    if not (window_start <= target_start <= target_end <= window_end):
+        raise RuntimeError(
+            "Stage B metadata violation: target span must remain inside the selected long-context window"
+        )
+
+    if not (0 <= prepared_start <= prepared_end <= len(teacher_bytes)):
+        raise RuntimeError(
+            "Stage B metadata violation: target offsets within teacher window are out of bounds"
+        )
+
+    trunc = prepared.get("truncation_metadata")
+    if isinstance(trunc, dict):
+        if int(trunc.get("final_window_bytes", len(teacher_bytes))) != len(teacher_bytes):
+            raise RuntimeError(
+                "Stage B metadata violation: truncation metadata final_window_bytes does not match teacher bytes"
+            )
+
+
 def run_stage_b(
     records: list[dict[str, Any]],
     teacher_name: str,
@@ -45,6 +77,10 @@ def run_stage_b(
     teacher_context = context_window if max_teacher_context is None else int(max_teacher_context)
 
     for record, view in zip(records, long_views):
+        # Interpretation note:
+        # `prepare_long_context_teacher_input(..., target_region_policy="preserve_full")`
+        # may legally return a window larger than `max_teacher_context` when the target
+        # span itself exceeds that limit. We keep this behavior and validate offsets.
         prepared = prepare_long_context_teacher_input(
             window_raw_bytes=view["window_raw_bytes"],
             target_start_offset=int(view["target_byte_start_in_window"]),
@@ -53,6 +89,7 @@ def run_stage_b(
             window_policy=window_policy,
             target_region_policy=target_region_policy,
         )
+        _validate_stage_b_window_metadata(record=record, view=view, prepared=prepared)
         prepared_contexts.append(prepared)
 
         infer_inputs.append(

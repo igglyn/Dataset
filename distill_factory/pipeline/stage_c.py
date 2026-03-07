@@ -22,6 +22,27 @@ def _build_structured_prompt(
     )
 
 
+
+
+def _validate_structured_output_record(
+    *,
+    structured_output: dict[str, Any],
+    template_name: str,
+    deterministic: bool,
+) -> None:
+    """Fail fast when Stage C structured outputs are missing inspectable fields."""
+    required = ("task_type", "prompt_text", "completion_text", "teacher_metadata")
+    for key in required:
+        if key not in structured_output:
+            raise RuntimeError(f"Stage C structured output missing required field: {key}")
+
+    if not isinstance(structured_output.get("task_type"), str) or not structured_output["task_type"].strip():
+        raise RuntimeError("Stage C structured output task_type must be a non-empty string")
+    if not isinstance(structured_output.get("prompt_text"), str) or not structured_output["prompt_text"].strip():
+        raise RuntimeError("Stage C structured output prompt_text must be a non-empty string")
+    if not isinstance(structured_output.get("completion_text"), str):
+        raise RuntimeError("Stage C structured output completion_text must be a string")
+
 def _dry_run_topk_output(record: dict[str, Any]) -> dict[str, Any]:
     k = int(record.get("top_k", 5))
     return {
@@ -116,6 +137,11 @@ def run_stage_c(
                 if isinstance(output.get("teacher_metadata"), dict) or output.get("teacher_metadata") is None
                 else None,
             }
+            _validate_structured_output_record(
+                structured_output=structured_output,
+                template_name=template_name,
+                deterministic=deterministic,
+            )
             record["structured_output"] = structured_output
             meta["structured_output"] = structured_output
             meta["stage_c_template"] = {
