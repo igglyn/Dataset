@@ -1,0 +1,16 @@
+# Example Stage C prompt-template settings.
+
+[stage_c]
+mode = "structured_outputs"
+template_name = "summarize_chunk"
+template_kwargs = { max_words = 100 }
+deterministic = true
+
+# Other valid template_name values:
+# - "answer_question_from_chunk"
+# - "continue_document"
+# - "extract_key_points"
+#
+# Example:
+# template_name = "answer_question_from_chunk"
+# template_kwargs = { question = "What key claim is made in this chunk?" }
