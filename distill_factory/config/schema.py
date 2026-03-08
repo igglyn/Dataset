@@ -95,6 +95,19 @@ class StageAConfig:
     minimum_selected_positions_per_record: int | None
     teacher_mixture: list[TeacherMixConfig]
 
+    def record_level_settings(self) -> dict[str, Any]:
+        """Stage A settings that are consumed from per-record keys at runtime."""
+        return {
+            "top_k": int(self.top_k),
+            "extract_hidden_summary": bool(self.extract_hidden_summary),
+            "enable_position_filtering": bool(self.enable_position_filtering),
+            "entropy_threshold": self.entropy_threshold,
+            "top1_gap_threshold": self.top1_gap_threshold,
+            "selection_window_radius": int(self.selection_window_radius),
+            "selection_mode": str(self.selection_mode),
+            "minimum_selected_positions_per_record": self.minimum_selected_positions_per_record,
+        }
+
 
 @dataclass(slots=True)
 class StageBConfig:

@@ -35,6 +35,29 @@ def _selection_requirements(records: list[dict[str, Any]]) -> tuple[bool, bool]:
     return need_entropy, need_gap
 
 
+def _assert_stage_b_selection_export_not_requested(records: list[dict[str, Any]]) -> None:
+    """Fail fast for Stage B selection export requests.
+
+    Stage B currently supports long-context supervision and can require per-token
+    teacher signals for capability validation, but it does not implement Stage-A-like
+    selection-aware export modes (position_mask/selected_windows).
+    """
+    for record in records:
+        selection_mode = str(record.get("selection_mode", "none"))
+        enable_position_filtering = bool(record.get("enable_position_filtering", False))
+        if enable_position_filtering or selection_mode in {"position_mask", "selected_windows"}:
+            raise NotImplementedError(
+                "Stage B selection-aware export is not implemented yet: "
+                "requested selection_mode='"
+                + selection_mode
+                + "' with enable_position_filtering="
+                + str(enable_position_filtering)
+                + ". "
+                "Use Stage A for selection export, or set [stage_b].selection_mode='none' "
+                "and enable_position_filtering=false for dense Stage B output."
+            )
+
+
 def _validate_stage_b_window_metadata(
     *,
     record: dict[str, Any],
@@ -81,6 +104,8 @@ def run_stage_b(
     """Run stage B with document-aware long-context windows around each target chunk."""
     if not records:
         return records
+
+    _assert_stage_b_selection_export_not_requested(records)
 
     long_views = build_long_context_records(
         records=records,

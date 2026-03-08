@@ -74,6 +74,14 @@ def _deterministic_subsample(records: list[dict[str, Any]], k: int, seed: int) -
     return [keyed[i] for i in chosen]
 
 
+
+
+def _inject_stage_a_record_config(record: dict[str, Any], cfg: Any) -> dict[str, Any]:
+    """Inject Stage A record-level settings from config for orchestrated runs."""
+    enriched = dict(record)
+    enriched.update(cfg.stage_a.record_level_settings())
+    return enriched
+
 def _apply_stage_mixture(
     records: list[dict[str, Any]],
     stage_name: str,
@@ -105,7 +113,8 @@ def _apply_stage_mixture(
             try:
                 single = [record]
                 if stage_name == "stage_a":
-                    out = run_stage_a(single, teacher_name=teacher_name, mode=mode, dry_run=dry_run)
+                    configured_record = _inject_stage_a_record_config(record, cfg)
+                    out = run_stage_a([configured_record], teacher_name=teacher_name, mode=mode, dry_run=dry_run)
                 elif stage_name == "stage_b":
                     out = run_stage_b(
                         single,
@@ -265,6 +274,22 @@ def _to_distilled_samples(records: list[dict[str, Any]]) -> list[DistilledSample
                 byte_start=int(rec["byte_start"]),
                 byte_end=int(rec["byte_end"]),
                 raw_bytes=bytes(rec["raw_bytes"]),
+                target_doc_id=None if rec.get("target_doc_id") is None else str(rec.get("target_doc_id")),
+                target_chunk_index=None if rec.get("target_chunk_index") is None else int(rec.get("target_chunk_index")),
+                target_byte_start=None if rec.get("target_byte_start") is None else int(rec.get("target_byte_start")),
+                target_byte_end=None if rec.get("target_byte_end") is None else int(rec.get("target_byte_end")),
+                teacher_window_byte_start=None
+                if rec.get("teacher_window_byte_start") is None
+                else int(rec.get("teacher_window_byte_start")),
+                teacher_window_byte_end=None
+                if rec.get("teacher_window_byte_end") is None
+                else int(rec.get("teacher_window_byte_end")),
+                target_start_offset_within_window=None
+                if rec.get("target_start_offset_within_window") is None
+                else int(rec.get("target_start_offset_within_window")),
+                target_end_offset_within_window=None
+                if rec.get("target_end_offset_within_window") is None
+                else int(rec.get("target_end_offset_within_window")),
                 split=str(rec["split"]),
                 teacher_name=str(rec.get("teacher_name", "unassigned_teacher")),
                 stage_name=str(rec.get("stage_name", "unassigned_stage")),
@@ -272,6 +297,11 @@ def _to_distilled_samples(records: list[dict[str, Any]]) -> list[DistilledSample
                 top_k_ids=rec.get("top_k_ids"),
                 top_k_logprobs=rec.get("top_k_logprobs"),
                 entropy=rec.get("entropy"),
+                per_token_entropy=rec.get("per_token_entropy"),
+                per_token_top1_gap=rec.get("per_token_top1_gap"),
+                per_token_token_ids=rec.get("per_token_token_ids"),
+                per_token_valid_mask=rec.get("per_token_valid_mask"),
+                hidden_summary=rec.get("hidden_summary"),
                 structured_output=rec.get("structured_output"),
                 extra_metadata=rec.get("extra_metadata"),
             )

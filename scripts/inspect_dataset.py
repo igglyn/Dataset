@@ -382,6 +382,22 @@ def _selection_inspection(records: list[dict[str, Any]]) -> dict[str, Any]:
         "selection_filtered_record_proportion": float(selection_filtered_record_count / total),
     }
 
+def per_token_field_presence(records: list[dict[str, Any]]) -> dict[str, bool]:
+    """Return whether each optional per-token field is present in any record."""
+    fields = (
+        "per_token_entropy",
+        "per_token_top1_gap",
+        "per_token_token_ids",
+        "per_token_valid_mask",
+    )
+    return {field: any(r.get(field) is not None for r in records) for field in fields}
+
+
+def selection_inspection(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Public wrapper for selection-aware export inspection metrics."""
+    return _selection_inspection(records)
+
+
 def _dataset_dir(path: str) -> Path:
     p = Path(path)
     return p if p.is_dir() else p.parent
@@ -511,7 +527,7 @@ def main() -> None:
     print(f"  top_k fields present: {_has_topk(records)}")
     print(f"  structured fields present: {_has_structured(records)}")
 
-    selection = _selection_inspection(records)
+    selection = selection_inspection(records)
     print("\nSelection-aware export inspection")
     print(f"  selected-window record count: {selection['selected_window_record_count']}")
     avg_window = selection['average_selected_window_length']

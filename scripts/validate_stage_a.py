@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Run a tiny Stage A validation job before large-scale dataset builds."""
+"""Run a tiny Stage A dense validation job before large-scale dataset builds.
+
+For selection-aware validation modes, use scripts/validate_stage_a_selection.py.
+"""
 
 from __future__ import annotations
 

@@ -119,7 +119,11 @@ def validate_teacher_capabilities(
     require_per_token_entropy: bool = False,
     require_per_token_top1_gap: bool = False,
 ) -> None:
-    """Validate teacher capabilities for a stage/mode and fail early with clear errors."""
+    """Validate teacher capabilities for a stage/mode and fail early with clear errors.
+
+    Note: per-token capability flags describe whether a teacher can emit per-token
+    signals, not whether a stage currently implements selection-aware export behavior.
+    """
     missing: list[str] = []
     if require_topk and not _teacher_capability(teacher, teacher_name, "supports_topk"):
         missing.append("supports_topk")
