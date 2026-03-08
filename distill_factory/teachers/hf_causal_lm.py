@@ -4,6 +4,7 @@ Policy notes:
 - Input `raw_bytes` are decoded to UTF-8 text with `errors="replace"` before tokenization.
 - `infer_topk` returns per-token-position top-k ids/logprobs from next-token logits, sorted by descending logprob.
 - Entropy policy is pooled: mean entropy across token positions for each record.
+- Optional per-position outputs can emit `per_token_entropy` and `per_token_top1_gap` aligned to top-k rows.
 - Hidden summary policy (optional): mean pool of final hidden states over non-padding tokens.
 - `infer_structured` uses deterministic generation (`do_sample=False`) and emits schema:
   task_type, prompt_text, completion_text, teacher_metadata.
@@ -51,6 +52,8 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         max_context: int = 2048,
         batch_size: int = 1,
         extract_hidden_summary: bool = False,
+        emit_per_token_entropy: bool = False,
+        emit_per_token_top1_gap: bool = False,
     ) -> None:
         self.model_name_or_path = model_name_or_path
         self.device_map = device_map
@@ -58,6 +61,8 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         self.max_context = max(1, max_context)
         self.batch_size = max(1, batch_size)
         self.extract_hidden_summary = bool(extract_hidden_summary)
+        self.emit_per_token_entropy = bool(emit_per_token_entropy)
+        self.emit_per_token_top1_gap = bool(emit_per_token_top1_gap)
 
         self._tokenizer = None
         self._model = None
@@ -290,6 +295,9 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
 
                     effective_logprobs = logprobs[i, :effective_positions, :]
                     effective_entropy = ent[i, :effective_positions]
+                    emit_per_token_entropy = self.emit_per_token_entropy or bool(batch[i].get("emit_per_token_entropy", False))
+                    emit_per_token_top1_gap = self.emit_per_token_top1_gap or bool(batch[i].get("emit_per_token_top1_gap", False))
+
                     top_logprobs, top_ids = torch.topk(
                         effective_logprobs,
                         k=min(k, logprobs.shape[-1]),
@@ -314,6 +322,15 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
                         "teacher_input_token_length": token_length,
                         "teacher_input_byte_length": int(input_byte_lengths[i]),
                     }
+                    if emit_per_token_entropy:
+                        out_item["per_token_entropy"] = [float(v) for v in effective_entropy.detach().cpu().tolist()]
+                    if emit_per_token_top1_gap:
+                        if top_logprobs.shape[1] >= 2:
+                            gaps = top_logprobs[:, 0] - top_logprobs[:, 1]
+                            out_item["per_token_top1_gap"] = [float(v) for v in gaps.detach().cpu().tolist()]
+                        else:
+                            # Convention: if top-2 is unavailable (e.g. top_k=1), emit 0.0 gap.
+                            out_item["per_token_top1_gap"] = [0.0 for _ in range(effective_positions)]
                     if self.extract_hidden_summary or bool(batch[i].get("extract_hidden_summary", False)):
                         hidden_vec = pooled_hidden[i]
                         if hidden_vec is None:

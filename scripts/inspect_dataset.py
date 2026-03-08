@@ -317,6 +317,71 @@ def _print_shard_stats(path: str) -> None:
         print(f"  - {shard['path']}: {shard['record_count']}")
 
 
+
+def _selection_inspection(records: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(records)
+    if total == 0:
+        return {
+            "selected_window_record_count": 0,
+            "average_selected_window_length": None,
+            "average_selected_position_count": None,
+            "position_masks_present": False,
+            "selection_filtered_record_proportion": 0.0,
+        }
+
+    selected_window_record_count = 0
+    selected_window_lengths: list[int] = []
+    selected_position_counts: list[int] = []
+    position_masks_present = False
+    selection_filtered_record_count = 0
+
+    for r in records:
+        meta = r.get("extra_metadata")
+        if not isinstance(meta, dict):
+            continue
+
+        has_selection_marker = (
+            "selected_window_start" in meta
+            or "selected_position_mask" in meta
+            or "selection_policy" in meta
+            or "selected_positions" in meta
+        )
+        if has_selection_marker:
+            selection_filtered_record_count += 1
+
+        if "selected_position_mask" in meta:
+            position_masks_present = True
+
+        if "selected_window_start" in meta and "selected_window_end" in meta:
+            try:
+                start = int(meta["selected_window_start"])
+                end = int(meta["selected_window_end"])
+                selected_window_record_count += 1
+                selected_window_lengths.append(max(0, end - start + 1))
+            except Exception:
+                pass
+
+        if "selected_position_count" in meta:
+            try:
+                selected_position_counts.append(int(meta["selected_position_count"]))
+            except Exception:
+                pass
+
+    avg_window_len = (
+        float(sum(selected_window_lengths) / len(selected_window_lengths)) if selected_window_lengths else None
+    )
+    avg_selected_pos = (
+        float(sum(selected_position_counts) / len(selected_position_counts)) if selected_position_counts else None
+    )
+
+    return {
+        "selected_window_record_count": int(selected_window_record_count),
+        "average_selected_window_length": avg_window_len,
+        "average_selected_position_count": avg_selected_pos,
+        "position_masks_present": bool(position_masks_present),
+        "selection_filtered_record_proportion": float(selection_filtered_record_count / total),
+    }
+
 def _dataset_dir(path: str) -> Path:
     p = Path(path)
     return p if p.is_dir() else p.parent
@@ -345,6 +410,7 @@ def _print_metrics_export(metrics: dict[str, Any] | None, metrics_path: Path, sh
     print(f"  average_entropy_per_teacher: {metrics.get('average_entropy_per_teacher')}")
     print(f"  record_counts_per_stage: {metrics.get('record_counts_per_stage')}")
     print(f"  record_counts_per_teacher: {metrics.get('record_counts_per_teacher')}")
+    print(f"  selection_summary: {metrics.get('selection_summary')}")
 
     if not show_histogram:
         return
@@ -444,6 +510,16 @@ def main() -> None:
     print("\nField presence")
     print(f"  top_k fields present: {_has_topk(records)}")
     print(f"  structured fields present: {_has_structured(records)}")
+
+    selection = _selection_inspection(records)
+    print("\nSelection-aware export inspection")
+    print(f"  selected-window record count: {selection['selected_window_record_count']}")
+    avg_window = selection['average_selected_window_length']
+    print(f"  average selected window length: {'n/a' if avg_window is None else f'{avg_window:.2f}'}")
+    avg_positions = selection['average_selected_position_count']
+    print(f"  average selected position count: {'n/a' if avg_positions is None else f'{avg_positions:.2f}'}")
+    print(f"  position masks present: {selection['position_masks_present']}")
+    print(f"  selection-filtered record proportion: {selection['selection_filtered_record_proportion']:.4f}")
 
     print("\nSample record")
     print(pformat(records[0], sort_dicts=True, width=100))

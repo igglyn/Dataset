@@ -20,6 +20,21 @@ def _dry_run_topk_output(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _selection_requirements(records: list[dict[str, Any]]) -> tuple[bool, bool]:
+    """Return whether per-token entropy/gap capabilities are required."""
+    need_entropy = False
+    need_gap = False
+    for record in records:
+        selection_mode = str(record.get("selection_mode", "none"))
+        if selection_mode == "none":
+            continue
+        if record.get("entropy_threshold") is not None:
+            need_entropy = True
+        if record.get("top1_gap_threshold") is not None:
+            need_gap = True
+    return need_entropy, need_gap
+
+
 def _validate_stage_b_window_metadata(
     *,
     record: dict[str, Any],
@@ -120,6 +135,8 @@ def run_stage_b(
                 "does not support hidden summaries."
             )
 
+        require_per_token_entropy, require_per_token_top1_gap = _selection_requirements(records)
+
         validate_teacher_capabilities(
             teacher,
             teacher_name,
@@ -128,6 +145,8 @@ def run_stage_b(
             require_topk=True,
             require_long_context=True,
             require_hidden_summary=requires_hidden_summary,
+            require_per_token_entropy=require_per_token_entropy,
+            require_per_token_top1_gap=require_per_token_top1_gap,
         )
         teacher.prepare()
         try:

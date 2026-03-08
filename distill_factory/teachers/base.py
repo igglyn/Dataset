@@ -69,6 +69,15 @@ class Teacher(ABC):
         """Whether this teacher backend supports tokenizer-only diagnostics."""
         return False
 
+
+    def supports_per_token_entropy(self) -> bool:
+        """Whether this teacher backend can emit per-token entropy signals."""
+        return False
+
+    def supports_per_token_top1_gap(self) -> bool:
+        """Whether this teacher backend can emit per-token top1-gap signals."""
+        return False
+
     @abstractmethod
     def close(self) -> None:
         """Release any resources held by this teacher."""
