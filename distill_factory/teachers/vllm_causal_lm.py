@@ -5,6 +5,7 @@ Policy notes:
 - `infer_topk` returns per-token-position top-k ids/logprobs from prompt token logprobs, sorted by descending logprob.
 - Entropy policy is pooled: mean entropy across token positions per record.
 - Entropy is computed from the available top-k distribution (renormalized over returned k).
+- Optional per-position outputs can emit `per_token_entropy` and `per_token_top1_gap` aligned to emitted prompt-logprob rows.
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ class VLLMCausalLMTeacher(Teacher, TeacherRuntime):
         batch_size: int = 1,
         gpu_memory_utilization: float = 0.9,
         trust_remote_code: bool = False,
+        emit_per_token_entropy: bool = False,
+        emit_per_token_top1_gap: bool = False,
     ) -> None:
         self.model_name_or_path = model_name_or_path
         self.tensor_parallel_size = max(1, tensor_parallel_size)
@@ -48,6 +51,8 @@ class VLLMCausalLMTeacher(Teacher, TeacherRuntime):
         self.batch_size = max(1, batch_size)
         self.gpu_memory_utilization = gpu_memory_utilization
         self.trust_remote_code = trust_remote_code
+        self.emit_per_token_entropy = bool(emit_per_token_entropy)
+        self.emit_per_token_top1_gap = bool(emit_per_token_top1_gap)
 
         self._llm = None
         self._tokenizer = None
@@ -314,6 +319,8 @@ class VLLMCausalLMTeacher(Teacher, TeacherRuntime):
                         per_pos_lps.append(lps[:top_k])
 
                 token_length = int(prompt_token_lengths[idx]) if idx < len(prompt_token_lengths) else 0
+                emit_per_token_entropy = self.emit_per_token_entropy or bool(batch[idx].get("emit_per_token_entropy", False))
+                emit_per_token_top1_gap = self.emit_per_token_top1_gap or bool(batch[idx].get("emit_per_token_top1_gap", False))
                 entropy_value = self._pooled_entropy(per_pos_lps)
                 self._validate_topk_semantics(
                     top_k_ids=per_pos_ids,
@@ -322,15 +329,30 @@ class VLLMCausalLMTeacher(Teacher, TeacherRuntime):
                     token_length=token_length,
                 )
 
-                outputs.append(
-                    {
-                        "top_k_ids": per_pos_ids,
-                        "top_k_logprobs": per_pos_lps,
-                        "entropy": entropy_value,
-                        "teacher_input_token_length": token_length,
-                        "teacher_input_byte_length": int(prompt_byte_lengths[idx]) if idx < len(prompt_byte_lengths) else None,
-                    }
-                )
+                out_item = {
+                    "top_k_ids": per_pos_ids,
+                    "top_k_logprobs": per_pos_lps,
+                    "entropy": entropy_value,
+                    "teacher_input_token_length": token_length,
+                    "teacher_input_byte_length": int(prompt_byte_lengths[idx]) if idx < len(prompt_byte_lengths) else None,
+                }
+                if emit_per_token_entropy:
+                    per_token_entropy: list[float] = []
+                    for row_lps in per_pos_lps:
+                        row_entropy = self._pooled_entropy([row_lps]) if row_lps else 0.0
+                        per_token_entropy.append(float(row_entropy))
+                    out_item["per_token_entropy"] = per_token_entropy
+                if emit_per_token_top1_gap:
+                    per_token_top1_gap: list[float] = []
+                    for row_lps in per_pos_lps:
+                        if len(row_lps) >= 2:
+                            per_token_top1_gap.append(float(row_lps[0] - row_lps[1]))
+                        else:
+                            # Convention: if top-2 is unavailable for a row, emit 0.0 gap.
+                            per_token_top1_gap.append(0.0)
+                    out_item["per_token_top1_gap"] = per_token_top1_gap
+
+                outputs.append(out_item)
 
         return outputs
 

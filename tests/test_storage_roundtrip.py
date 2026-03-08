@@ -18,6 +18,10 @@ def test_storage_roundtrip(tmp_path):
             top_k_ids=[[1, 2, 3], [4, 5, 6]],
             top_k_logprobs=[[-0.1, -0.2, -0.5], [-0.3, -0.7, -1.2]],
             entropy=1.23,
+            per_token_entropy=[0.2, 0.4],
+            per_token_top1_gap=[1.1, 0.7],
+            per_token_token_ids=[101, 202],
+            per_token_valid_mask=[True, False],
             hidden_summary=[0.1, 0.2, 0.3, 0.4],
             extra_metadata={"source_path": "data/raw/doc1.txt"},
         ),
@@ -76,6 +80,12 @@ def test_storage_roundtrip(tmp_path):
     assert abs(loaded[0].top_k_logprobs[0][0] - records[0].top_k_logprobs[0][0]) < 1e-3
     assert loaded[0].schema_version == SCHEMA_VERSION
     assert loaded[0].extra_metadata == {"source_path": "data/raw/doc1.txt"}
+    assert loaded[0].per_token_entropy is not None
+    assert abs(loaded[0].per_token_entropy[0] - 0.2) < 1e-3
+    assert loaded[0].per_token_top1_gap is not None
+    assert abs(loaded[0].per_token_top1_gap[1] - 0.7) < 1e-3
+    assert loaded[0].per_token_token_ids == [101, 202]
+    assert loaded[0].per_token_valid_mask == [True, False]
     assert loaded[0].hidden_summary is not None
     assert len(loaded[0].hidden_summary) == 4
     assert loaded[1].raw_bytes == b"\xff\xfe\x00\x01"
@@ -102,6 +112,18 @@ def test_storage_roundtrip(tmp_path):
     assert raw[0]["top_k_logprobs"]["dtype"] == "float16"
 
     assert isinstance(raw[0]["entropy"], float)
+    assert isinstance(raw[0]["per_token_entropy"], dict)
+    assert raw[0]["per_token_entropy"]["encoding"] == "ndarray_b64"
+    assert raw[0]["per_token_entropy"]["dtype"] == "float16"
+    assert isinstance(raw[0]["per_token_top1_gap"], dict)
+    assert raw[0]["per_token_top1_gap"]["encoding"] == "ndarray_b64"
+    assert raw[0]["per_token_top1_gap"]["dtype"] == "float16"
+    assert isinstance(raw[0]["per_token_token_ids"], dict)
+    assert raw[0]["per_token_token_ids"]["encoding"] == "ndarray_b64"
+    assert raw[0]["per_token_token_ids"]["dtype"] in {"uint8", "uint16", "uint32"}
+    assert isinstance(raw[0]["per_token_valid_mask"], dict)
+    assert raw[0]["per_token_valid_mask"]["encoding"] == "ndarray_b64"
+    assert raw[0]["per_token_valid_mask"]["dtype"] in {"uint8", "uint16", "uint32"}
     assert isinstance(raw[0]["hidden_summary"], dict)
     assert raw[0]["hidden_summary"]["encoding"] == "ndarray_b64"
     assert raw[0]["hidden_summary"]["dtype"] == "float16"

@@ -87,6 +87,12 @@ class StageAConfig:
     llama_model_hint: str | None
     llama_request_timeout: float
     extract_hidden_summary: bool
+    enable_position_filtering: bool
+    entropy_threshold: float | None
+    top1_gap_threshold: float | None
+    selection_window_radius: int
+    selection_mode: str
+    minimum_selected_positions_per_record: int | None
     teacher_mixture: list[TeacherMixConfig]
 
 
@@ -107,6 +113,12 @@ class StageBConfig:
     llama_model_hint: str | None
     llama_request_timeout: float
     extract_hidden_summary: bool
+    enable_position_filtering: bool
+    entropy_threshold: float | None
+    top1_gap_threshold: float | None
+    selection_window_radius: int
+    selection_mode: str
+    minimum_selected_positions_per_record: int | None
     teacher_mixture: list[TeacherMixConfig]
 
 
@@ -303,6 +315,68 @@ def load_config(path: str | Path) -> PipelineConfig:
     if stage_b_target_region_policy not in {"preserve_full", "truncate_if_needed"}:
         raise ValueError("[stage_b].target_region_policy must be 'preserve_full' or 'truncate_if_needed'")
 
+    def _validate_position_filtering(stage_key: str, stage_table: dict[str, Any]) -> tuple[bool, float | None, float | None, int, str, int | None]:
+        enable_position_filtering = bool(stage_table.get("enable_position_filtering", False))
+        selection_mode = str(stage_table.get("selection_mode", "none"))
+        if selection_mode not in {"none", "position_mask", "selected_windows"}:
+            raise ValueError(
+                f"[{stage_key}].selection_mode must be 'none', 'position_mask', or 'selected_windows'"
+            )
+
+        entropy_threshold_raw = stage_table.get("entropy_threshold")
+        entropy_threshold = None if entropy_threshold_raw is None else float(entropy_threshold_raw)
+        if entropy_threshold is not None and (not entropy_threshold >= 0.0):
+            raise ValueError(f"[{stage_key}].entropy_threshold must be >= 0 when set")
+
+        top1_gap_threshold_raw = stage_table.get("top1_gap_threshold")
+        top1_gap_threshold = None if top1_gap_threshold_raw is None else float(top1_gap_threshold_raw)
+        if top1_gap_threshold is not None and (not top1_gap_threshold >= 0.0):
+            raise ValueError(f"[{stage_key}].top1_gap_threshold must be >= 0 when set")
+
+        selection_window_radius = int(stage_table.get("selection_window_radius", 0))
+        if selection_window_radius < 0:
+            raise ValueError(f"[{stage_key}].selection_window_radius must be >= 0")
+
+        minimum_selected_raw = stage_table.get("minimum_selected_positions_per_record")
+        minimum_selected_positions_per_record = None if minimum_selected_raw is None else int(minimum_selected_raw)
+        if minimum_selected_positions_per_record is not None and minimum_selected_positions_per_record < 0:
+            raise ValueError(f"[{stage_key}].minimum_selected_positions_per_record must be >= 0 when set")
+
+        if enable_position_filtering:
+            if selection_mode == "none":
+                raise ValueError(f"[{stage_key}].selection_mode cannot be 'none' when enable_position_filtering=true")
+            if entropy_threshold is None and top1_gap_threshold is None:
+                raise ValueError(
+                    f"[{stage_key}] position filtering enabled but no thresholds provided; set entropy_threshold and/or top1_gap_threshold"
+                )
+
+        return (
+            enable_position_filtering,
+            entropy_threshold,
+            top1_gap_threshold,
+            selection_window_radius,
+            selection_mode,
+            minimum_selected_positions_per_record,
+        )
+
+    (
+        stage_a_enable_position_filtering,
+        stage_a_entropy_threshold,
+        stage_a_top1_gap_threshold,
+        stage_a_selection_window_radius,
+        stage_a_selection_mode,
+        stage_a_minimum_selected_positions_per_record,
+    ) = _validate_position_filtering("stage_a", stage_a_cfg)
+
+    (
+        stage_b_enable_position_filtering,
+        stage_b_entropy_threshold,
+        stage_b_top1_gap_threshold,
+        stage_b_selection_window_radius,
+        stage_b_selection_mode,
+        stage_b_minimum_selected_positions_per_record,
+    ) = _validate_position_filtering("stage_b", stage_b_cfg)
+
     stage_c_mode = str(stage_c_cfg["mode"])
     if stage_c_mode not in {"structured_outputs", "topk_logits"}:
         raise ValueError("[stage_c].mode must be 'structured_outputs' or 'topk_logits'")
@@ -433,6 +507,12 @@ def load_config(path: str | Path) -> PipelineConfig:
             llama_model_hint=None if stage_a_cfg.get("llama_model_hint") is None else str(stage_a_cfg.get("llama_model_hint")),
             llama_request_timeout=float(stage_a_cfg.get("llama_request_timeout", 30.0)),
             extract_hidden_summary=bool(stage_a_cfg.get("extract_hidden_summary", False)),
+            enable_position_filtering=stage_a_enable_position_filtering,
+            entropy_threshold=stage_a_entropy_threshold,
+            top1_gap_threshold=stage_a_top1_gap_threshold,
+            selection_window_radius=stage_a_selection_window_radius,
+            selection_mode=stage_a_selection_mode,
+            minimum_selected_positions_per_record=stage_a_minimum_selected_positions_per_record,
             teacher_mixture=_parse_teacher_mixture(stage_a_cfg, default_teacher_name=stage_a_teacher_name),
         ),
         stage_b=StageBConfig(
@@ -451,6 +531,12 @@ def load_config(path: str | Path) -> PipelineConfig:
             llama_model_hint=None if stage_b_cfg.get("llama_model_hint") is None else str(stage_b_cfg.get("llama_model_hint")),
             llama_request_timeout=float(stage_b_cfg.get("llama_request_timeout", 30.0)),
             extract_hidden_summary=bool(stage_b_cfg.get("extract_hidden_summary", False)),
+            enable_position_filtering=stage_b_enable_position_filtering,
+            entropy_threshold=stage_b_entropy_threshold,
+            top1_gap_threshold=stage_b_top1_gap_threshold,
+            selection_window_radius=stage_b_selection_window_radius,
+            selection_mode=stage_b_selection_mode,
+            minimum_selected_positions_per_record=stage_b_minimum_selected_positions_per_record,
             teacher_mixture=_parse_teacher_mixture(stage_b_cfg, default_teacher_name=stage_b_teacher_name),
         ),
         stage_c=StageCConfig(

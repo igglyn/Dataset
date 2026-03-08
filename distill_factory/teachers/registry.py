@@ -36,6 +36,8 @@ _TEACHER_CAPABILITIES: dict[str, dict[str, object]] = {
         "supports_structured": True,
         "supports_long_context": False,
         "supports_hidden_summary": False,
+        "supports_per_token_entropy": False,
+        "supports_per_token_top1_gap": False,
     },
     "bulk_grounding_teacher": {
         "backend_type": "hf",
@@ -43,6 +45,8 @@ _TEACHER_CAPABILITIES: dict[str, dict[str, object]] = {
         "supports_structured": True,
         "supports_long_context": False,
         "supports_hidden_summary": False,
+        "supports_per_token_entropy": False,
+        "supports_per_token_top1_gap": False,
     },
     "long_context_structure_teacher": {
         "backend_type": "hf",
@@ -50,6 +54,8 @@ _TEACHER_CAPABILITIES: dict[str, dict[str, object]] = {
         "supports_structured": True,
         "supports_long_context": False,
         "supports_hidden_summary": False,
+        "supports_per_token_entropy": False,
+        "supports_per_token_top1_gap": False,
     },
     "refinement_teacher": {
         "backend_type": "hf",
@@ -57,6 +63,8 @@ _TEACHER_CAPABILITIES: dict[str, dict[str, object]] = {
         "supports_structured": True,
         "supports_long_context": False,
         "supports_hidden_summary": False,
+        "supports_per_token_entropy": False,
+        "supports_per_token_top1_gap": False,
     },
     "hf_causal_lm": {
         "backend_type": "hf",
@@ -64,6 +72,8 @@ _TEACHER_CAPABILITIES: dict[str, dict[str, object]] = {
         "supports_structured": True,
         "supports_long_context": True,
         "supports_hidden_summary": True,
+        "supports_per_token_entropy": True,
+        "supports_per_token_top1_gap": True,
     },
     "vllm_causal_lm": {
         "backend_type": "vllm",
@@ -71,6 +81,8 @@ _TEACHER_CAPABILITIES: dict[str, dict[str, object]] = {
         "supports_structured": False,
         "supports_long_context": True,
         "supports_hidden_summary": False,
+        "supports_per_token_entropy": True,
+        "supports_per_token_top1_gap": True,
     },
     "llamacpp_server": {
         "backend_type": "llamacpp_server",
@@ -78,6 +90,8 @@ _TEACHER_CAPABILITIES: dict[str, dict[str, object]] = {
         "supports_structured": False,
         "supports_long_context": True,
         "supports_hidden_summary": False,
+        "supports_per_token_entropy": True,
+        "supports_per_token_top1_gap": True,
     },
 }
 
@@ -102,6 +116,8 @@ def validate_teacher_capabilities(
     require_structured: bool = False,
     require_hidden_summary: bool = False,
     require_long_context: bool = False,
+    require_per_token_entropy: bool = False,
+    require_per_token_top1_gap: bool = False,
 ) -> None:
     """Validate teacher capabilities for a stage/mode and fail early with clear errors."""
     missing: list[str] = []
@@ -113,6 +129,10 @@ def validate_teacher_capabilities(
         missing.append("supports_hidden_summary")
     if require_long_context and not _teacher_capability(teacher, teacher_name, "supports_long_context"):
         missing.append("supports_long_context")
+    if require_per_token_entropy and not _teacher_capability(teacher, teacher_name, "supports_per_token_entropy"):
+        missing.append("supports_per_token_entropy")
+    if require_per_token_top1_gap and not _teacher_capability(teacher, teacher_name, "supports_per_token_top1_gap"):
+        missing.append("supports_per_token_top1_gap")
 
     if missing:
         mode_suffix = f" (mode={mode})" if mode else ""

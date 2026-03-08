@@ -62,6 +62,7 @@ def _deduplicate_samples(records: list[DistilledSample]) -> tuple[list[Distilled
 
 
 def _write_jsonl_file(records: list[DistilledSample], path: Path) -> None:
+    """Write canonical records, including optional advanced per-token fields."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as f:
         for sample in records:
@@ -70,6 +71,7 @@ def _write_jsonl_file(records: list[DistilledSample], path: Path) -> None:
 
 
 def _append_jsonl_file(records: list[DistilledSample], path: Path) -> None:
+    """Append canonical records, preserving optional per-token fields."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as f:
         for sample in records:

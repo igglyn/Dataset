@@ -18,6 +18,11 @@ Top-k compact storage strategy for JSONL:
 - `top_k_logprobs` are packed as float16 when shape is regular.
 - Reader remains backward compatible with legacy list-based fields.
 - `hidden_summary` uses the same compact ndarray_b64 packing as float vectors (float16).
+- optional per-position distillation signals (`per_token_entropy`,
+  `per_token_top1_gap`, `per_token_token_ids`, `per_token_valid_mask`) use the
+  same compact packing helpers where appropriate.
+- selection export metadata (e.g. selected window bounds or selected position masks/policy)
+  is carried via `extra_metadata` for downstream filtering/export steps.
 """
 
 from __future__ import annotations
@@ -52,6 +57,10 @@ class DistilledSample:
     top_k_ids: list[int] | list[list[int]] | None = None
     top_k_logprobs: list[float] | list[list[float]] | None = None
     entropy: float | None = None
+    per_token_entropy: list[float] | None = None
+    per_token_top1_gap: list[float] | None = None
+    per_token_token_ids: list[int] | None = None
+    per_token_valid_mask: list[bool] | list[int] | None = None
     hidden_summary: list[float] | list[list[float]] | None = None
     structured_output: dict[str, Any] | None = None
     extra_metadata: dict[str, Any] | None = None
@@ -215,6 +224,24 @@ def to_record(sample: DistilledSample) -> dict[str, Any]:
         _pack_logprobs(sample.top_k_logprobs) if isinstance(sample.top_k_logprobs, list) else sample.top_k_logprobs
     )
     entropy_wire = None if sample.entropy is None else _cast_float16_scalar(sample.entropy)
+    per_token_entropy_wire = (
+        _pack_logprobs(sample.per_token_entropy) if isinstance(sample.per_token_entropy, list) else sample.per_token_entropy
+    )
+    per_token_top1_gap_wire = (
+        _pack_logprobs(sample.per_token_top1_gap)
+        if isinstance(sample.per_token_top1_gap, list)
+        else sample.per_token_top1_gap
+    )
+    per_token_token_ids_wire = (
+        _pack_ids(sample.per_token_token_ids)
+        if isinstance(sample.per_token_token_ids, list)
+        else sample.per_token_token_ids
+    )
+    per_token_valid_mask_wire = (
+        _pack_ids(sample.per_token_valid_mask)
+        if isinstance(sample.per_token_valid_mask, list)
+        else sample.per_token_valid_mask
+    )
     hidden_summary_wire = (
         _pack_hidden_summary(sample.hidden_summary) if isinstance(sample.hidden_summary, list) else sample.hidden_summary
     )
@@ -241,6 +268,10 @@ def to_record(sample: DistilledSample) -> dict[str, Any]:
         "top_k_ids": top_k_ids_wire,
         "top_k_logprobs": top_k_logprobs_wire,
         "entropy": entropy_wire,
+        "per_token_entropy": per_token_entropy_wire,
+        "per_token_top1_gap": per_token_top1_gap_wire,
+        "per_token_token_ids": per_token_token_ids_wire,
+        "per_token_valid_mask": per_token_valid_mask_wire,
         "hidden_summary": hidden_summary_wire,
         "structured_output": structured_output,
         "extra_metadata": sample.extra_metadata,
@@ -268,7 +299,14 @@ def from_record(record: dict[str, Any]) -> DistilledSample:
 
     top_k_ids = _decode_compact(record.get("top_k_ids"))
     top_k_logprobs = _decode_compact(record.get("top_k_logprobs"))
+    per_token_entropy = _decode_compact(record.get("per_token_entropy"))
+    per_token_top1_gap = _decode_compact(record.get("per_token_top1_gap"))
+    per_token_token_ids = _decode_compact(record.get("per_token_token_ids"))
+    per_token_valid_mask = _decode_compact(record.get("per_token_valid_mask"))
     hidden_summary = _decode_compact(record.get("hidden_summary"))
+
+    if isinstance(per_token_valid_mask, list):
+        per_token_valid_mask = [bool(v) for v in per_token_valid_mask]
 
     return DistilledSample(
         doc_id=str(record["doc_id"]),
@@ -297,6 +335,10 @@ def from_record(record: dict[str, Any]) -> DistilledSample:
         top_k_ids=top_k_ids,
         top_k_logprobs=top_k_logprobs,
         entropy=None if record.get("entropy") is None else float(record["entropy"]),
+        per_token_entropy=per_token_entropy,
+        per_token_top1_gap=per_token_top1_gap,
+        per_token_token_ids=per_token_token_ids,
+        per_token_valid_mask=per_token_valid_mask,
         hidden_summary=hidden_summary,
         structured_output=structured_output,
         extra_metadata=extra_metadata,

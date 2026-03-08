@@ -195,7 +195,7 @@ def sample_jsonl_records(
 def read_jsonl(path: str | Path) -> list[DistilledSample]:
     """Read canonical distilled records from JSONL.
 
-    Decodes compact top-k representations via `from_record()`.
+    Decodes compact top-k and optional per-token representations via `from_record()`.
     """
     return [from_record(r) for r in read_jsonl_records(path)]
 

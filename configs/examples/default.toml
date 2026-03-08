@@ -35,6 +35,14 @@ torch_dtype = "float16"
 max_context = 2048
 batch_size = 1
 
+# Position-aware export filtering policy (schema-only for now; filtering implementation lands later).
+enable_position_filtering = false
+entropy_threshold = 1.5
+top1_gap_threshold = 0.2
+selection_window_radius = 0
+selection_mode = "none"
+minimum_selected_positions_per_record = 1
+
 [stage_b]
 enabled = true
 teacher_name = "hf_causal_lm"
@@ -45,6 +53,14 @@ temperature = 1.0
 context_window = 8192
 stride = 2048
 max_teacher_context = 4096
+
+# Position-aware export filtering policy (schema-only for now; filtering implementation lands later).
+enable_position_filtering = false
+entropy_threshold = 1.5
+top1_gap_threshold = 0.2
+selection_window_radius = 2
+selection_mode = "none"
+minimum_selected_positions_per_record = 1
 
 [stage_c]
 enabled = true

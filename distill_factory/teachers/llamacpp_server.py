@@ -10,6 +10,8 @@ Assumptions (easy to adjust):
 - Top-k distillation currently uses OpenAI-compatible `/v1/completions` prompt
   logprob payloads. If required fields are unavailable, inference fails
   explicitly instead of guessing semantics.
+- Optional per-position outputs (`per_token_entropy`, `per_token_top1_gap`) are
+  emitted only when explicitly requested and safely computable from response rows.
 """
 
 from __future__ import annotations
@@ -58,6 +60,8 @@ class LlamaCppServerTeacher(Teacher, TeacherRuntime):
         max_context: int = 2048,
         default_top_k: int = 5,
         default_temperature: float = 0.0,
+        emit_per_token_entropy: bool = False,
+        emit_per_token_top1_gap: bool = False,
     ) -> None:
         self.base_url = str(base_url).rstrip("/")
         self.model_hint = None if model_hint is None else str(model_hint)
@@ -65,6 +69,8 @@ class LlamaCppServerTeacher(Teacher, TeacherRuntime):
         self.max_context = max(1, int(max_context))
         self.default_top_k = max(1, int(default_top_k))
         self.default_temperature = float(default_temperature)
+        self.emit_per_token_entropy = bool(emit_per_token_entropy)
+        self.emit_per_token_top1_gap = bool(emit_per_token_top1_gap)
         self._prepared = False
         self._server_metadata: dict[str, Any] = {}
         self._supports_tokenizer_diagnostics = False
@@ -376,19 +382,47 @@ class LlamaCppServerTeacher(Teacher, TeacherRuntime):
 
         token_length = len(token_ids)
         expected_max_positions = max(token_length - 1, 0)
+        emit_per_token_entropy = self.emit_per_token_entropy or bool(record.get("emit_per_token_entropy", False))
+        emit_per_token_top1_gap = self.emit_per_token_top1_gap or bool(record.get("emit_per_token_top1_gap", False))
         if len(per_pos_ids) > expected_max_positions:
             raise RuntimeError(
                 "llama.cpp top-k inference failed: prompt logprob rows exceed expected token positions "
                 f"({len(per_pos_ids)} > {expected_max_positions})."
             )
 
-        return {
+        out_item = {
             "top_k_ids": per_pos_ids,
             "top_k_logprobs": per_pos_lps,
             "entropy": self._pooled_entropy(per_pos_lps),
             "teacher_input_token_length": token_length,
             "teacher_input_byte_length": len(prompt_text.encode("utf-8", errors="replace")),
         }
+        if emit_per_token_entropy:
+            per_token_entropy: list[float] = []
+            for row_lps in per_pos_lps:
+                if not row_lps:
+                    raise RuntimeError(
+                        "llama.cpp top-k inference failed: cannot compute per_token_entropy for an empty top_logprobs row."
+                    )
+                per_token_entropy.append(float(self._pooled_entropy([row_lps])))
+            out_item["per_token_entropy"] = per_token_entropy
+
+        if emit_per_token_top1_gap:
+            per_token_top1_gap: list[float] = []
+            for row_lps in per_pos_lps:
+                if len(row_lps) < 2:
+                    raise RuntimeError(
+                        "llama.cpp top-k inference failed: cannot compute per_token_top1_gap because a top_logprobs row has fewer than 2 candidates."
+                    )
+                gap = float(row_lps[0] - row_lps[1])
+                if gap < 0.0:
+                    raise RuntimeError(
+                        "llama.cpp top-k inference failed: per_token_top1_gap would be negative; expected descending top_logprobs rows."
+                    )
+                per_token_top1_gap.append(gap)
+            out_item["per_token_top1_gap"] = per_token_top1_gap
+
+        return out_item
 
     def _extract_token_count(self, body: Any) -> int | None:
         if isinstance(body, dict):

@@ -29,6 +29,8 @@ Capability flags used by the pipeline:
 - `supports_structured`
 - `supports_hidden_summary`
 - `supports_long_context`
+- `supports_per_token_entropy`
+- `supports_per_token_top1_gap`
 
 Stage requirements:
 
@@ -36,6 +38,9 @@ Stage requirements:
 - Stage B requires `supports_topk` and `supports_long_context`.
 - Stage C in `structured_outputs` mode requires `supports_structured`.
 - Hidden-summary extraction requires `supports_hidden_summary` in the selected stage mode.
+- Selection-aware export modes (`position_mask` / `selected_windows`) require per-token signal capabilities when corresponding thresholds are configured:
+  - entropy threshold => `supports_per_token_entropy`
+  - top1-gap threshold => `supports_per_token_top1_gap`
 
 If a teacher does not satisfy required capabilities, the run fails early with a clear error that includes teacher name, stage, mode, and missing capabilities.
 
@@ -51,6 +56,87 @@ mode = "topk_logits"
 ```
 
 For complete examples, start from `configs/examples/default.toml` or one of the backend-specific examples in `configs/examples/*_backend.toml`.
+
+### Optional position-aware selection policy config (schema support)
+
+Stage A and Stage B can now declare position-aware export selection policy fields (kept conservative/disabled by default):
+
+```toml
+[stage_a]
+enable_position_filtering = false
+entropy_threshold = 1.5
+top1_gap_threshold = 0.2
+selection_window_radius = 0
+selection_mode = "none" # "none" | "position_mask" | "selected_windows"
+minimum_selected_positions_per_record = 1
+```
+
+The same fields are available in `[stage_b]`.
+
+Current scope in this prompt: **configuration/schema only**. These settings are validated and carried in config, but record filtering/export behavior is implemented in a later step.
+
+Validation rules:
+
+- if `enable_position_filtering = true`, `selection_mode` must not be `"none"`
+- if `enable_position_filtering = true`, at least one threshold must be set (`entropy_threshold` and/or `top1_gap_threshold`)
+- `entropy_threshold >= 0` and `top1_gap_threshold >= 0` when provided
+- `selection_window_radius >= 0`
+- `minimum_selected_positions_per_record >= 0` when provided
+
+### Position-selection utility semantics (reusable layer)
+
+Core pure helpers now live in `distill_factory/data/selection.py` for export/filtering pipelines:
+
+- entropy selection: keep positions where `per_token_entropy >= entropy_threshold`
+- gap selection: keep positions where `per_token_top1_gap <= top1_gap_threshold`
+- combined selection default: **union** (OR); intersection (AND) is explicitly supported
+- selected positions can be expanded into fixed-radius windows and overlapping windows are merged
+- optional minimum-selected-position enforcement is available for sparse selections
+
+These utilities are intentionally pure (no I/O), so they can be reused by future export/filtering steps and tested independently.
+
+### Stage A selected-window export mode (first conservative implementation)
+
+When `enable_position_filtering = true`, Stage A supports two explicit export modes:
+
+- `selection_mode = "position_mask"`
+  - keeps dense full records/chunks unchanged
+  - computes informative positions from per-token signals
+  - attaches reusable selection metadata in `extra_metadata`:
+    - `selected_position_mask`
+    - `selected_positions`
+    - `selected_position_count`
+    - `selection_policy`
+
+- `selection_mode = "selected_windows"`
+  - builds the same position mask from available per-position teacher signals:
+    - entropy rule: `per_token_entropy >= entropy_threshold`
+    - gap rule: `per_token_top1_gap <= top1_gap_threshold`
+  - if both thresholds are set, the default combined rule is **union**
+  - expands selected positions by `selection_window_radius` and merges overlapping windows
+  - emits only those selected local windows (instead of one dense full-position record)
+  - attaches window metadata in `extra_metadata`:
+    - `selected_window_start`
+    - `selected_window_end`
+    - `selected_position_count`
+    - `selection_policy`
+
+Dense behavior remains unchanged by default (selection disabled).
+
+Quick policy sanity-check before expensive runs:
+
+```bash
+python scripts/preview_selection_policy.py   --config configs/examples/default.toml   --sample-records 4
+```
+
+This diagnostic runs a tiny Stage A teacher pass and prints:
+
+- selected position counts per sampled record
+- selected window ranges
+- average compression ratio vs dense chunks
+- whether selection is driven by entropy, gap, or both
+
+Use it to quickly detect policies that are too aggressive (over-pruning) or too weak before full dataset generation.
 
 
 ## Teacher abstraction vs runtime backend
@@ -130,15 +216,16 @@ Migration notes (from earlier implicit backend structure):
 
 ## Backend capability matrix (current)
 
-| Backend | supports_topk | supports_structured | supports_hidden_summary | supports_long_context | supports_tokenizer_diagnostics |
-|---|---:|---:|---:|---:|---:|
-| `hf` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `vllm` | ✅ | ❌ | ❌ | ✅ | ✅ |
-| `llamacpp_server` | ✅ | ❌ | ❌ | ✅ | ⚠️ depends on server tokenization endpoints |
+| Backend | supports_topk | supports_structured | supports_hidden_summary | supports_long_context | supports_per_token_entropy | supports_per_token_top1_gap | supports_tokenizer_diagnostics |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `hf` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `vllm` | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| `llamacpp_server` | ✅ | ❌ | ❌ | ✅ | ✅* | ✅* | ⚠️ depends on server tokenization endpoints |
 
 Notes:
-- Stage runners fail early if a requested feature is unsupported (for example structured mode in Stage C, hidden summaries, or token diagnostics).
+- Stage runners fail early if a requested feature is unsupported (for example structured mode in Stage C, hidden summaries, per-token selection signals, or token diagnostics).
 - For `llamacpp_server`, tokenizer diagnostics require compatible `/tokenize` or `/v1/tokenize` support.
+- `llamacpp_server` per-token signal support (`✅*`) depends on response shape and can fail explicitly for malformed/insufficient top-logprob rows.
 
 ## Hugging Face teacher setup (Stage A)
 
@@ -155,6 +242,11 @@ HF-related stage A config fields:
 - `torch_dtype`
 - `max_context`
 - `batch_size`
+- `emit_per_token_entropy` (optional, default `false`)
+- `emit_per_token_top1_gap` (optional, default `false`)
+
+When enabled, HF `infer_topk` emits per-position arrays aligned to the same effective prompt positions as `top_k_ids`/`top_k_logprobs`.
+`per_token_top1_gap` is defined as `logprob(top1) - logprob(top2)` at each position; if only one candidate is requested (`top_k = 1`), the emitted gap is `0.0` by convention.
 
 Policy note: `raw_bytes` are decoded as UTF-8 with replacement (`errors="replace"`) before tokenization.
 
@@ -175,12 +267,23 @@ vLLM-related stage A config fields:
 - `batch_size`
 - `gpu_memory_utilization`
 - `trust_remote_code`
+- `emit_per_token_entropy` (optional, default `false`)
+- `emit_per_token_top1_gap` (optional, default `false`)
 
 Current vLLM backend behavior mirrors HF output semantics as closely as practical:
 
 - emits `top_k_ids` and `top_k_logprobs` per token position
 - emits pooled mean entropy per record
+- when enabled, emits per-position arrays aligned with emitted vLLM prompt-logprob rows:
+  - `per_token_entropy`
+  - `per_token_top1_gap`
+- `per_token_top1_gap` uses `logprob(top1) - logprob(top2)` when two candidates are available; if a row only has one candidate, gap is `0.0` by convention
 - decodes `raw_bytes` as UTF-8 with replacement before tokenization
+
+vLLM alignment note vs HF:
+
+- vLLM prompt logprobs may omit some prompt positions depending on runtime behavior, so per-position array lengths can be `<= teacher_input_token_length - 1`.
+- Entropy for vLLM per-position/pooled outputs is computed from the returned top-k candidates (renormalized over available mass), not the full vocabulary distribution.
 
 
 
@@ -233,9 +336,16 @@ Current status:
 - startup/self-check is implemented via HTTP probes to common endpoints and metadata discovery
 - if endpoint metadata is missing, the backend keeps minimal safe assumptions and reports what it did discover
 - top-k extraction is implemented for OpenAI-compatible `/v1/completions` prompt logprobs responses
+- optional per-position outputs are supported when explicitly enabled (`emit_per_token_entropy`, `emit_per_token_top1_gap`) and when response rows include enough numeric candidates
+- `per_token_top1_gap` is defined as `logprob(top1) - logprob(top2)` and fails explicitly if any emitted row has fewer than 2 candidates
 - the backend requires numeric token-id keys in `top_logprobs` maps to produce `top_k_ids`; if unavailable, it fails explicitly
 - structured generation is not implemented for this backend in the current prompt
 - hidden-summary extraction is not supported for this backend
+
+Compared with HF/vLLM:
+
+- llama.cpp per-position outputs depend on server response shape; unsupported/malformed rows fail explicitly instead of using fallback values.
+- entropy is computed from returned top-k candidates (renormalized over available mass), not full-vocabulary logits.
 
 Note: endpoint support varies across llama.cpp versions/builds; adjust the endpoint catalog and response field adapters in `distill_factory/teachers/llamacpp_server.py` to match your deployment.
 
@@ -340,6 +450,20 @@ python scripts/inspect_dataset.py --path data/processed/train.jsonl
 The inspector prints:
 
 - schema summary (versions + observed fields)
+- selection-aware export indicators when present:
+  - count of selected-window records
+  - average selected window length
+  - average selected position count
+  - whether position masks are present
+  - proportion of records using selection filtering
+
+Dense vs selection-aware exports:
+
+- **Dense export**: full records with no selection markers in `extra_metadata`.
+- **Position-mask export**: full records retained, with `selected_position_mask` / `selected_positions` metadata for later weighting/post-processing.
+- **Selected-windows export**: records represent selected local windows and include `selected_window_start` / `selected_window_end` metadata.
+
+Canonical JSONL records are backward-compatible: older records without optional per-token fields remain valid. When present, `per_token_entropy` and `per_token_top1_gap` can be used by downstream selection/filtering steps, and `per_token_token_ids` / `per_token_valid_mask` provide alignment helpers for position-level semantics.
 - counts by stage
 - counts by teacher
 - average chunk length in bytes

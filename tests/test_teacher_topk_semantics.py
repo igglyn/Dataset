@@ -10,6 +10,7 @@ import pytest
 from distill_factory.teachers.hf_causal_lm import HFCausalLMTeacher
 from distill_factory.teachers.llamacpp_server import LlamaCppServerTeacher
 from distill_factory.teachers.vllm_causal_lm import VLLMCausalLMTeacher
+import distill_factory.teachers.vllm_causal_lm as vllm_causal_lm_module
 
 
 class _TokenizerStub:
@@ -169,6 +170,89 @@ def test_llamacpp_infer_topk_fails_without_numeric_token_ids() -> None:
     finally:
         teacher.close()
 
+
+
+def test_llamacpp_infer_topk_emits_per_token_signals_when_rows_have_enough_candidates() -> None:
+    class _PerTokenLlamaCppTeacher(LlamaCppServerTeacher):
+        def startup_self_check(self, requested_top_k: int | None = None) -> dict[str, object]:
+            return {"ok": True}
+
+        def _http_json(self, method: str, endpoint: str, payload: dict[str, object] | None = None) -> tuple[int, object]:
+            assert method == "POST"
+            assert endpoint == "/v1/completions"
+            return 200, {
+                "choices": [
+                    {
+                        "logprobs": {
+                            "prompt_token_ids": [11, 22, 33],
+                            "top_logprobs": [
+                                None,
+                                {"22": -0.2, "7": -0.5, "4": -1.0},
+                                {"33": -0.3, "9": -0.6, "5": -1.2},
+                            ],
+                        }
+                    }
+                ]
+            }
+
+    teacher = _PerTokenLlamaCppTeacher(
+        base_url="http://localhost:8080",
+        max_context=32,
+        default_top_k=3,
+        emit_per_token_entropy=True,
+        emit_per_token_top1_gap=True,
+    )
+    teacher.prepare()
+    try:
+        output = teacher.infer_topk([{"raw_bytes": b"hello", "top_k": 3}])[0]
+    finally:
+        teacher.close()
+
+    assert "per_token_entropy" in output
+    assert "per_token_top1_gap" in output
+    assert len(output["per_token_entropy"]) == len(output["top_k_ids"])
+    assert len(output["per_token_top1_gap"]) == len(output["top_k_ids"])
+    assert all(math.isfinite(float(v)) for v in output["per_token_entropy"])
+    assert all(math.isfinite(float(v)) for v in output["per_token_top1_gap"])
+    assert all(float(v) >= 0.0 for v in output["per_token_top1_gap"])
+
+
+def test_llamacpp_infer_topk_fails_for_per_token_top1_gap_with_single_candidate_rows() -> None:
+    class _SingleCandidateLlamaCppTeacher(LlamaCppServerTeacher):
+        def startup_self_check(self, requested_top_k: int | None = None) -> dict[str, object]:
+            return {"ok": True}
+
+        def _http_json(self, method: str, endpoint: str, payload: dict[str, object] | None = None) -> tuple[int, object]:
+            assert method == "POST"
+            assert endpoint == "/v1/completions"
+            return 200, {
+                "choices": [
+                    {
+                        "logprobs": {
+                            "prompt_token_ids": [11, 22, 33],
+                            "top_logprobs": [
+                                None,
+                                {"22": -0.2},
+                                {"33": -0.3},
+                            ],
+                        }
+                    }
+                ]
+            }
+
+    teacher = _SingleCandidateLlamaCppTeacher(
+        base_url="http://localhost:8080",
+        max_context=32,
+        default_top_k=1,
+        emit_per_token_top1_gap=True,
+    )
+    teacher.prepare()
+    try:
+        with pytest.raises(RuntimeError, match="fewer than 2 candidates"):
+            teacher.infer_topk([{"raw_bytes": b"hello", "top_k": 1}])
+    finally:
+        teacher.close()
+
 def test_hf_runtime_capabilities_and_tokenizer_diagnostics() -> None:
     teacher = HFCausalLMTeacher(model_name_or_path="dummy", max_context=16, batch_size=1)
     capabilities = teacher.capabilities()
@@ -212,6 +296,226 @@ def test_vllm_runtime_capabilities_and_tokenizer_diagnostics() -> None:
         {"teacher_input_token_length": 3, "teacher_input_byte_length": 3},
         {"teacher_input_token_length": 2, "teacher_input_byte_length": 2},
     ]
+
+
+
+def test_hf_infer_topk_emits_per_token_selection_signals_when_enabled() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _FakeTokenizer:
+        vocab_size = 6
+
+        def __call__(self, texts: list[str], return_tensors: str, padding: bool, truncation: bool, max_length: int):
+            assert return_tensors == "pt"
+            _ = (padding, truncation, max_length)
+            input_ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+            attention_mask = torch.tensor([[1, 1, 1]], dtype=torch.long)
+            return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    class _FakeModelOut:
+        def __init__(self, logits):
+            self.logits = logits
+            self.hidden_states = None
+
+    class _FakeModel:
+        def __init__(self):
+            self.device = torch.device("cpu")
+
+        def __call__(self, **kwargs):
+            _ = kwargs
+            # [batch=1, seq=3, vocab=6]
+            logits = torch.tensor(
+                [
+                    [
+                        [0.0, 3.0, 1.0, -1.0, -2.0, -3.0],
+                        [0.0, 1.0, 2.0, -1.0, -2.0, -3.0],
+                        [0.0, 0.5, 0.1, -1.0, -2.0, -3.0],
+                    ]
+                ],
+                dtype=torch.float32,
+            )
+            return _FakeModelOut(logits=logits)
+
+        def eval(self):
+            return None
+
+    teacher = HFCausalLMTeacher(
+        model_name_or_path="dummy",
+        max_context=16,
+        batch_size=1,
+        emit_per_token_entropy=True,
+        emit_per_token_top1_gap=True,
+    )
+    teacher._tokenizer = _FakeTokenizer()
+    teacher._model = _FakeModel()
+
+    out = teacher.infer_topk([{"raw_bytes": b"abc", "top_k": 3}])[0]
+
+    assert "per_token_entropy" in out
+    assert "per_token_top1_gap" in out
+    assert len(out["per_token_entropy"]) == len(out["top_k_ids"])
+    assert len(out["per_token_top1_gap"]) == len(out["top_k_ids"])
+    assert all(math.isfinite(float(v)) for v in out["per_token_entropy"])
+    assert all(math.isfinite(float(v)) for v in out["per_token_top1_gap"])
+    assert all(float(v) >= 0.0 for v in out["per_token_top1_gap"])
+
+
+def test_hf_infer_topk_per_token_top1_gap_is_zero_when_topk_is_one() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _FakeTokenizer:
+        vocab_size = 5
+
+        def __call__(self, texts: list[str], return_tensors: str, padding: bool, truncation: bool, max_length: int):
+            _ = (texts, return_tensors, padding, truncation, max_length)
+            input_ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+            attention_mask = torch.tensor([[1, 1, 1]], dtype=torch.long)
+            return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    class _FakeModelOut:
+        def __init__(self, logits):
+            self.logits = logits
+            self.hidden_states = None
+
+    class _FakeModel:
+        def __init__(self):
+            self.device = torch.device("cpu")
+
+        def __call__(self, **kwargs):
+            _ = kwargs
+            logits = torch.tensor(
+                [[
+                    [0.0, 2.0, 1.0, -1.0, -2.0],
+                    [0.0, 1.5, 1.0, -1.0, -2.0],
+                    [0.0, 0.5, 0.1, -1.0, -2.0],
+                ]],
+                dtype=torch.float32,
+            )
+            return _FakeModelOut(logits=logits)
+
+        def eval(self):
+            return None
+
+    teacher = HFCausalLMTeacher(
+        model_name_or_path="dummy",
+        max_context=16,
+        batch_size=1,
+        emit_per_token_top1_gap=True,
+    )
+    teacher._tokenizer = _FakeTokenizer()
+    teacher._model = _FakeModel()
+
+    out = teacher.infer_topk([{"raw_bytes": b"abc", "top_k": 1}])[0]
+    assert len(out["per_token_top1_gap"]) == len(out["top_k_ids"])
+    assert all(float(v) == 0.0 for v in out["per_token_top1_gap"])
+
+
+
+def test_vllm_infer_topk_emits_per_token_selection_signals_when_enabled() -> None:
+    class _FakeTokenizer:
+        vocab_size = 32
+
+        def encode(self, text: str):
+            _ = text
+            return [1, 2, 3, 4]
+
+        def decode(self, token_ids):
+            _ = token_ids
+            return "trimmed"
+
+    class _FakeGeneratedItem:
+        def __init__(self, prompt_logprobs):
+            self.prompt_logprobs = prompt_logprobs
+
+    class _FakeLLM:
+        def generate(self, prompts, sampling_params):
+            _ = (prompts, sampling_params)
+            # Simulate vLLM prompt_logprobs behavior: first row may be missing (None), and a row can have only one candidate.
+            return [
+                _FakeGeneratedItem(
+                    prompt_logprobs=[
+                        None,
+                        {1: -0.1, 2: -0.3, 3: -0.5},
+                        {4: -0.2},
+                        {5: -0.4, 6: -0.9},
+                    ]
+                )
+            ]
+
+    class _SamplingParamsStub:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    teacher = VLLMCausalLMTeacher(
+        model_name_or_path="dummy",
+        max_context=16,
+        batch_size=1,
+        emit_per_token_entropy=True,
+        emit_per_token_top1_gap=True,
+    )
+    teacher._tokenizer = _FakeTokenizer()
+    teacher._llm = _FakeLLM()
+
+    original_sampling_params = vllm_causal_lm_module.SamplingParams
+    vllm_causal_lm_module.SamplingParams = _SamplingParamsStub
+    try:
+        out = teacher.infer_topk([{"raw_bytes": b"abc", "top_k": 3}])[0]
+    finally:
+        vllm_causal_lm_module.SamplingParams = original_sampling_params
+
+    assert "per_token_entropy" in out
+    assert "per_token_top1_gap" in out
+    assert len(out["top_k_ids"]) <= max(int(out["teacher_input_token_length"]) - 1, 0)
+    assert len(out["per_token_entropy"]) == len(out["top_k_ids"])
+    assert len(out["per_token_top1_gap"]) == len(out["top_k_ids"])
+    assert all(math.isfinite(float(v)) for v in out["per_token_entropy"])
+    assert all(math.isfinite(float(v)) for v in out["per_token_top1_gap"])
+    assert all(float(v) >= 0.0 for v in out["per_token_top1_gap"])
+
+
+def test_vllm_infer_topk_per_token_top1_gap_is_zero_when_row_has_single_candidate() -> None:
+    class _FakeTokenizer:
+        vocab_size = 32
+
+        def encode(self, text: str):
+            _ = text
+            return [1, 2, 3]
+
+        def decode(self, token_ids):
+            _ = token_ids
+            return "trimmed"
+
+    class _FakeGeneratedItem:
+        def __init__(self, prompt_logprobs):
+            self.prompt_logprobs = prompt_logprobs
+
+    class _FakeLLM:
+        def generate(self, prompts, sampling_params):
+            _ = (prompts, sampling_params)
+            return [_FakeGeneratedItem(prompt_logprobs=[None, {1: -0.25}, {2: -0.5}])]
+
+    class _SamplingParamsStub:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    teacher = VLLMCausalLMTeacher(
+        model_name_or_path="dummy",
+        max_context=16,
+        batch_size=1,
+        emit_per_token_top1_gap=True,
+    )
+    teacher._tokenizer = _FakeTokenizer()
+    teacher._llm = _FakeLLM()
+
+    original_sampling_params = vllm_causal_lm_module.SamplingParams
+    vllm_causal_lm_module.SamplingParams = _SamplingParamsStub
+    try:
+        out = teacher.infer_topk([{"raw_bytes": b"abc", "top_k": 1}])[0]
+    finally:
+        vllm_causal_lm_module.SamplingParams = original_sampling_params
+
+    assert len(out["per_token_top1_gap"]) == len(out["top_k_ids"])
+    assert all(float(v) == 0.0 for v in out["per_token_top1_gap"])
 
 def test_hf_backend_smoke_topk_semantics() -> None:
     pytest.importorskip("torch")
