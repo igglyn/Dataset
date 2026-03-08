@@ -38,9 +38,10 @@ Stage requirements:
 - Stage B requires `supports_topk` and `supports_long_context`.
 - Stage C in `structured_outputs` mode requires `supports_structured`.
 - Hidden-summary extraction requires `supports_hidden_summary` in the selected stage mode.
-- Selection-aware export modes (`position_mask` / `selected_windows`) require per-token signal capabilities when corresponding thresholds are configured:
+- Stage A selection-aware export modes (`position_mask` / `selected_windows`) require per-token signal capabilities when corresponding thresholds are configured:
   - entropy threshold => `supports_per_token_entropy`
   - top1-gap threshold => `supports_per_token_top1_gap`
+- Stage B currently does **not** implement selection-aware export modes; requesting them fails fast with an explicit error.
 
 If a teacher does not satisfy required capabilities, the run fails early with a clear error that includes teacher name, stage, mode, and missing capabilities.
 
@@ -71,9 +72,9 @@ selection_mode = "none" # "none" | "position_mask" | "selected_windows"
 minimum_selected_positions_per_record = 1
 ```
 
-The same fields are available in `[stage_b]`.
+The same fields are available in `[stage_b]` for schema compatibility.
 
-Current scope in this prompt: **configuration/schema only**. These settings are validated and carried in config, but record filtering/export behavior is implemented in a later step.
+Current Stage B status: selection fields are parsed/validated, but Stage-B-specific selection export (`position_mask` / `selected_windows`) is not implemented and now fails fast when requested.
 
 Validation rules:
 
@@ -123,6 +124,8 @@ When `enable_position_filtering = true`, Stage A supports two explicit export mo
 
 Dense behavior remains unchanged by default (selection disabled).
 
+> Stage B note: selection-aware export modes are currently unsupported in Stage B and fail fast if requested.
+
 Quick policy sanity-check before expensive runs:
 
 ```bash
@@ -137,6 +140,12 @@ This diagnostic runs a tiny Stage A teacher pass and prints:
 - whether selection is driven by entropy, gap, or both
 
 Use it to quickly detect policies that are too aggressive (over-pruning) or too weak before full dataset generation.
+
+Tiny end-to-end Stage A selection harness (normal pipeline path, Stage A only):
+
+```bash
+python scripts/validate_stage_a_selection.py --config configs/examples/default.toml --mode selected_windows --records 8
+```
 
 
 ## Teacher abstraction vs runtime backend
@@ -499,6 +508,13 @@ When introducing or switching a backend (especially `llamacpp_server`), run a ti
 ```bash
 python scripts/validate_backend_parity.py   --left-config configs/examples/hf_backend.toml   --right-config configs/examples/llamacpp_server_backend.toml   --sample-records 8
 ```
+
+For selection-aware Stage A runs (`position_mask` / `selected_windows`), run this check before switching backends. The tool now prints PASS/WARN/FAIL structural signals for:
+- per-token field presence (`per_token_entropy`, `per_token_top1_gap`)
+- plausible per-token lengths relative to top-k position count
+- selection-metadata feasibility when selection mode is enabled
+
+It intentionally does **not** require exact numeric equality across backends.
 
 What it compares (without requiring exact logit equality):
 

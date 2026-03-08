@@ -12,6 +12,7 @@ import argparse
 from pathlib import Path
 import statistics
 import sys
+from typing import Any
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,7 +20,7 @@ if __package__ is None or __package__ == "":
 from distill_factory.config.schema import load_config
 from distill_factory.data.chunking import chunk_documents
 from distill_factory.data.ingest import ingest_documents
-from distill_factory.data.selection import mask_to_windows, select_positions
+from distill_factory.pipeline.stage_a import selection_artifacts_for_record
 from distill_factory.teachers.hf_causal_lm import HFCausalLMTeacher
 from distill_factory.teachers.llamacpp_server import LlamaCppServerTeacher
 from distill_factory.teachers.vllm_causal_lm import VLLMCausalLMTeacher
@@ -44,7 +45,14 @@ def _sample_chunks(config_path: str, limit: int, input_path_override: str | None
     return chunks[: max(1, limit)], cfg
 
 
+def _selection_requirements_from_cfg(cfg: Any) -> tuple[bool, bool]:
+    if not bool(cfg.stage_a.enable_position_filtering) or str(cfg.stage_a.selection_mode) == "none":
+        return False, False
+    return cfg.stage_a.entropy_threshold is not None, cfg.stage_a.top1_gap_threshold is not None
+
+
 def _build_stage_a_teacher(cfg):
+    require_entropy, require_gap = _selection_requirements_from_cfg(cfg)
     backend = str(cfg.stage_a.backend_type)
     if backend == "hf":
         return HFCausalLMTeacher(
@@ -53,8 +61,8 @@ def _build_stage_a_teacher(cfg):
             torch_dtype=cfg.stage_a.torch_dtype,
             max_context=cfg.stage_a.max_context,
             batch_size=cfg.stage_a.batch_size,
-            emit_per_token_entropy=True,
-            emit_per_token_top1_gap=True,
+            emit_per_token_entropy=require_entropy,
+            emit_per_token_top1_gap=require_gap,
         )
 
     if backend == "vllm":
@@ -66,8 +74,8 @@ def _build_stage_a_teacher(cfg):
             batch_size=cfg.stage_a.batch_size,
             gpu_memory_utilization=cfg.stage_a.gpu_memory_utilization,
             trust_remote_code=cfg.stage_a.trust_remote_code,
-            emit_per_token_entropy=True,
-            emit_per_token_top1_gap=True,
+            emit_per_token_entropy=require_entropy,
+            emit_per_token_top1_gap=require_gap,
         )
 
     if backend == "llamacpp_server":
@@ -78,8 +86,8 @@ def _build_stage_a_teacher(cfg):
             max_context=cfg.stage_a.max_context,
             default_top_k=cfg.stage_a.top_k,
             default_temperature=cfg.stage_a.temperature,
-            emit_per_token_entropy=True,
-            emit_per_token_top1_gap=True,
+            emit_per_token_entropy=require_entropy,
+            emit_per_token_top1_gap=require_gap,
         )
 
     raise ValueError(f"Unsupported stage_a.backend_type: {backend}")
@@ -97,6 +105,21 @@ def _selection_driver(cfg) -> str:
     return "none"
 
 
+def _stage_a_selection_record(cfg: Any, output: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "top_k_ids": output.get("top_k_ids"),
+        "top_k_logprobs": output.get("top_k_logprobs"),
+        "per_token_entropy": output.get("per_token_entropy"),
+        "per_token_top1_gap": output.get("per_token_top1_gap"),
+        "enable_position_filtering": bool(cfg.stage_a.enable_position_filtering),
+        "selection_mode": str(cfg.stage_a.selection_mode),
+        "entropy_threshold": cfg.stage_a.entropy_threshold,
+        "top1_gap_threshold": cfg.stage_a.top1_gap_threshold,
+        "selection_window_radius": int(cfg.stage_a.selection_window_radius),
+        "minimum_selected_positions_per_record": cfg.stage_a.minimum_selected_positions_per_record,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Preview Stage A selection policy on a tiny sample.")
     parser.add_argument("--config", default="configs/examples/default.toml", help="Path to pipeline config.")
@@ -110,16 +133,7 @@ def main() -> None:
         raise ValueError("No chunks available from current config input corpus")
 
     teacher = _build_stage_a_teacher(cfg)
-    records = []
-    for chunk in chunks:
-        records.append(
-            {
-                "raw_bytes": bytes(chunk["raw_bytes"]),
-                "top_k": int(cfg.stage_a.top_k),
-                "emit_per_token_entropy": True,
-                "emit_per_token_top1_gap": True,
-            }
-        )
+    records = [{"raw_bytes": bytes(chunk["raw_bytes"]), "top_k": int(cfg.stage_a.top_k)} for chunk in chunks]
 
     try:
         teacher.prepare()
@@ -127,55 +141,42 @@ def main() -> None:
     finally:
         teacher.close()
 
-    selection_mode = str(cfg.stage_a.selection_mode)
-    entropy_threshold = cfg.stage_a.entropy_threshold
-    top1_gap_threshold = cfg.stage_a.top1_gap_threshold
-    radius = int(cfg.stage_a.selection_window_radius)
-    minimum_selected = cfg.stage_a.minimum_selected_positions_per_record
-
     print("Selection policy preview (Stage A)")
     print(f"  config: {args.config}")
     print(f"  sampled_records: {len(outputs)}")
     print(f"  backend_type: {cfg.stage_a.backend_type}")
-    print(f"  selection_mode: {selection_mode}")
+    print(f"  selection_mode: {cfg.stage_a.selection_mode}")
     print(f"  driven_by: {_selection_driver(cfg)}")
-    print(f"  entropy_threshold: {entropy_threshold}")
-    print(f"  top1_gap_threshold: {top1_gap_threshold}")
-    print(f"  selection_window_radius: {radius}")
-    print(f"  minimum_selected_positions_per_record: {minimum_selected}")
+    print(f"  entropy_threshold: {cfg.stage_a.entropy_threshold}")
+    print(f"  top1_gap_threshold: {cfg.stage_a.top1_gap_threshold}")
+    print(f"  selection_window_radius: {int(cfg.stage_a.selection_window_radius)}")
+    print(f"  minimum_selected_positions_per_record: {cfg.stage_a.minimum_selected_positions_per_record}")
 
     compression_ratios: list[float] = []
     selected_counts: list[int] = []
 
     for idx, out in enumerate(outputs):
-        per_entropy = out.get("per_token_entropy")
-        per_gap = out.get("per_token_top1_gap")
-        top_k_ids = out.get("top_k_ids")
+        selection_record = _stage_a_selection_record(cfg, out)
+        artifacts = selection_artifacts_for_record(selection_record)
 
-        dense_len = len(top_k_ids) if isinstance(top_k_ids, list) else 0
-        mask = select_positions(
-            per_token_entropy=per_entropy if isinstance(per_entropy, list) else None,
-            per_token_top1_gap=per_gap if isinstance(per_gap, list) else None,
-            entropy_threshold=entropy_threshold,
-            top1_gap_threshold=top1_gap_threshold,
-            combine_mode="union",
-            minimum_selected_positions=minimum_selected,
-        )
-        windows = mask_to_windows(mask, radius=radius)
-
-        selected_count = sum(1 for v in mask if v)
-        window_tokens = sum((end - start + 1) for start, end in windows)
+        dense_len = len(selection_record.get("top_k_ids")) if isinstance(selection_record.get("top_k_ids"), list) else 0
+        selected_count = len(artifacts["selected_positions"])
+        window_tokens = sum((end - start + 1) for start, end in artifacts["windows"])
         ratio = (float(window_tokens) / float(dense_len)) if dense_len > 0 else 0.0
 
         selected_counts.append(selected_count)
         compression_ratios.append(ratio)
 
-        print(f"  record[{idx}] dense_positions={dense_len} selected_positions={selected_count} windows={windows}")
+        print(
+            f"  record[{idx}] dense_positions={dense_len} "
+            f"selected_positions={selected_count} windows={artifacts['windows']}"
+        )
 
     avg_selected = statistics.mean(selected_counts) if selected_counts else 0.0
     avg_ratio = statistics.mean(compression_ratios) if compression_ratios else 0.0
     print(f"  average_selected_position_count: {avg_selected:.2f}")
     print(f"  average_compression_ratio_vs_dense_chunk: {avg_ratio:.4f}")
+    print("  parity_note: preview uses distill_factory.pipeline.stage_a.selection_artifacts_for_record")
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ if __package__ is None or __package__ == "":
 from distill_factory.config.schema import load_config
 from distill_factory.data.chunking import chunk_documents
 from distill_factory.data.ingest import ingest_documents
+from distill_factory.pipeline.stage_a import selection_artifacts_for_record
 from distill_factory.teachers.hf_causal_lm import HFCausalLMTeacher
 from distill_factory.teachers.llamacpp_server import LlamaCppServerTeacher
 from distill_factory.teachers.vllm_causal_lm import VLLMCausalLMTeacher
@@ -40,6 +41,13 @@ class RunSummary:
     entropy_min: float | None
     entropy_max: float | None
     entropy_avg: float | None
+    per_token_entropy_present_count: int
+    per_token_top1_gap_present_count: int
+    per_token_entropy_plausible_len_count: int
+    per_token_top1_gap_plausible_len_count: int
+    selection_mode: str
+    selection_enabled: bool
+    selection_metadata_possible_count: int
 
 
 def _sample_chunks(config_path: str, limit: int, input_path_override: str | None = None, file_glob_override: str | None = None) -> tuple[list[dict[str, Any]], Any]:
@@ -61,7 +69,14 @@ def _sample_chunks(config_path: str, limit: int, input_path_override: str | None
     return chunks[: max(1, limit)], cfg
 
 
+def _selection_requirements_from_cfg(cfg: Any) -> tuple[bool, bool]:
+    if not bool(cfg.stage_a.enable_position_filtering) or str(cfg.stage_a.selection_mode) == "none":
+        return False, False
+    return cfg.stage_a.entropy_threshold is not None, cfg.stage_a.top1_gap_threshold is not None
+
+
 def _build_teacher(cfg: Any, backend: str):
+    require_entropy, require_gap = _selection_requirements_from_cfg(cfg)
     if backend == "hf":
         return HFCausalLMTeacher(
             model_name_or_path=cfg.stage_a.model_name_or_path,
@@ -69,6 +84,8 @@ def _build_teacher(cfg: Any, backend: str):
             torch_dtype=cfg.stage_a.torch_dtype,
             max_context=cfg.stage_a.max_context,
             batch_size=cfg.stage_a.batch_size,
+            emit_per_token_entropy=require_entropy,
+            emit_per_token_top1_gap=require_gap,
         ), str(cfg.stage_a.model_name_or_path)
 
     if backend == "vllm":
@@ -80,6 +97,8 @@ def _build_teacher(cfg: Any, backend: str):
             batch_size=cfg.stage_a.batch_size,
             gpu_memory_utilization=cfg.stage_a.gpu_memory_utilization,
             trust_remote_code=cfg.stage_a.trust_remote_code,
+            emit_per_token_entropy=require_entropy,
+            emit_per_token_top1_gap=require_gap,
         ), str(cfg.stage_a.model_name_or_path)
 
     if backend == "llamacpp_server":
@@ -91,9 +110,36 @@ def _build_teacher(cfg: Any, backend: str):
             max_context=cfg.stage_a.max_context,
             default_top_k=cfg.stage_a.top_k,
             default_temperature=cfg.stage_a.temperature,
+            emit_per_token_entropy=require_entropy,
+            emit_per_token_top1_gap=require_gap,
         ), str(label)
 
     raise ValueError(f"Unsupported backend: {backend}")
+
+
+def _position_count(top_k_ids: Any) -> int:
+    if not isinstance(top_k_ids, list):
+        return 0
+    return len(top_k_ids)
+
+
+def _plausible_len(values: Any, positions: int) -> bool:
+    return isinstance(values, list) and (positions == 0 or len(values) == positions)
+
+
+def _selection_record_from_output(cfg: Any, out: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "top_k_ids": out.get("top_k_ids"),
+        "top_k_logprobs": out.get("top_k_logprobs"),
+        "per_token_entropy": out.get("per_token_entropy"),
+        "per_token_top1_gap": out.get("per_token_top1_gap"),
+        "enable_position_filtering": bool(cfg.stage_a.enable_position_filtering),
+        "selection_mode": str(cfg.stage_a.selection_mode),
+        "entropy_threshold": cfg.stage_a.entropy_threshold,
+        "top1_gap_threshold": cfg.stage_a.top1_gap_threshold,
+        "selection_window_radius": int(cfg.stage_a.selection_window_radius),
+        "minimum_selected_positions_per_record": cfg.stage_a.minimum_selected_positions_per_record,
+    }
 
 
 def _run_backend(label: str, cfg: Any, backend: str, chunks: list[dict[str, Any]]) -> RunSummary:
@@ -109,15 +155,44 @@ def _run_backend(label: str, cfg: Any, backend: str, chunks: list[dict[str, Any]
     topk_present_count = 0
     token_lengths: list[int] = []
     entropies: list[float] = []
+    per_token_entropy_present_count = 0
+    per_token_top1_gap_present_count = 0
+    per_token_entropy_plausible_len_count = 0
+    per_token_top1_gap_plausible_len_count = 0
+    selection_metadata_possible_count = 0
+
     for out in outputs:
-        if out.get("top_k_ids") is not None and out.get("top_k_logprobs") is not None:
+        top_k_ids = out.get("top_k_ids")
+        if top_k_ids is not None and out.get("top_k_logprobs") is not None:
             topk_present_count += 1
+
         tlen = out.get("teacher_input_token_length")
         if isinstance(tlen, (int, float)):
             token_lengths.append(int(tlen))
+
         entropy = out.get("entropy")
         if isinstance(entropy, (int, float)):
             entropies.append(float(entropy))
+
+        positions = _position_count(top_k_ids)
+        per_entropy = out.get("per_token_entropy")
+        per_gap = out.get("per_token_top1_gap")
+
+        if per_entropy is not None:
+            per_token_entropy_present_count += 1
+            if _plausible_len(per_entropy, positions):
+                per_token_entropy_plausible_len_count += 1
+
+        if per_gap is not None:
+            per_token_top1_gap_present_count += 1
+            if _plausible_len(per_gap, positions):
+                per_token_top1_gap_plausible_len_count += 1
+
+        artifacts = selection_artifacts_for_record(_selection_record_from_output(cfg, out))
+        if str(artifacts["selection_mode"]) == "position_mask":
+            selection_metadata_possible_count += 1
+        elif str(artifacts["selection_mode"]) == "selected_windows" and len(artifacts["windows"]) > 0:
+            selection_metadata_possible_count += 1
 
     return RunSummary(
         label=label,
@@ -133,6 +208,13 @@ def _run_backend(label: str, cfg: Any, backend: str, chunks: list[dict[str, Any]
         entropy_min=min(entropies) if entropies else None,
         entropy_max=max(entropies) if entropies else None,
         entropy_avg=statistics.mean(entropies) if entropies else None,
+        per_token_entropy_present_count=per_token_entropy_present_count,
+        per_token_top1_gap_present_count=per_token_top1_gap_present_count,
+        per_token_entropy_plausible_len_count=per_token_entropy_plausible_len_count,
+        per_token_top1_gap_plausible_len_count=per_token_top1_gap_plausible_len_count,
+        selection_mode=str(cfg.stage_a.selection_mode),
+        selection_enabled=bool(cfg.stage_a.enable_position_filtering) and str(cfg.stage_a.selection_mode) != "none",
+        selection_metadata_possible_count=selection_metadata_possible_count,
     )
 
 
@@ -158,33 +240,95 @@ def _print_summary(summary: RunSummary) -> None:
         f"max={_fmt_opt_float(summary.entropy_max)} "
         f"avg={_fmt_opt_float(summary.entropy_avg)}"
     )
+    print(
+        "  per-token structural: "
+        f"entropy_present={summary.per_token_entropy_present_count}/{summary.record_count} "
+        f"gap_present={summary.per_token_top1_gap_present_count}/{summary.record_count} "
+        f"entropy_len_plausible={summary.per_token_entropy_plausible_len_count}/{summary.per_token_entropy_present_count or 1} "
+        f"gap_len_plausible={summary.per_token_top1_gap_plausible_len_count}/{summary.per_token_top1_gap_present_count or 1}"
+    )
+    if summary.selection_enabled:
+        print(
+            "  selection metadata feasibility: "
+            f"{summary.selection_metadata_possible_count}/{summary.record_count} "
+            f"(mode={summary.selection_mode})"
+        )
+
+
+def _status(level: str, msg: str) -> None:
+    print(f"{level}: {msg}")
 
 
 def _print_comparison(left: RunSummary, right: RunSummary) -> None:
     print("\n=== Parity sanity comparison ===")
-    print(f"record_count: left={left.record_count} right={right.record_count}")
-    print(
-        "top-k field presence: "
-        f"left={left.topk_present_count}/{left.record_count} "
-        f"right={right.topk_present_count}/{right.record_count}"
+    _status("PASS" if left.record_count == right.record_count else "FAIL", f"record_count left={left.record_count} right={right.record_count}")
+
+    _status(
+        "PASS" if left.topk_present_count == left.record_count and right.topk_present_count == right.record_count else "WARN",
+        (
+            "top-k field presence "
+            f"left={left.topk_present_count}/{left.record_count} "
+            f"right={right.topk_present_count}/{right.record_count}"
+        ),
     )
 
-    print(
-        "token_length availability: "
-        f"left={left.token_length_count} right={right.token_length_count}"
+    _status(
+        "PASS" if left.per_token_entropy_present_count == right.per_token_entropy_present_count else "WARN",
+        (
+            "per_token_entropy presence "
+            f"left={left.per_token_entropy_present_count}/{left.record_count} "
+            f"right={right.per_token_entropy_present_count}/{right.record_count}"
+        ),
     )
-    print(
-        "token_length average: "
-        f"left={_fmt_opt_float(left.token_length_avg, 2)} right={_fmt_opt_float(right.token_length_avg, 2)}"
+    _status(
+        "PASS" if left.per_token_top1_gap_present_count == right.per_token_top1_gap_present_count else "WARN",
+        (
+            "per_token_top1_gap presence "
+            f"left={left.per_token_top1_gap_present_count}/{left.record_count} "
+            f"right={right.per_token_top1_gap_present_count}/{right.record_count}"
+        ),
     )
 
-    print(
-        "entropy range: "
-        f"left=[{_fmt_opt_float(left.entropy_min)}, {_fmt_opt_float(left.entropy_max)}] "
-        f"right=[{_fmt_opt_float(right.entropy_min)}, {_fmt_opt_float(right.entropy_max)}]"
+    left_len_ok = left.per_token_entropy_present_count == 0 or left.per_token_entropy_plausible_len_count == left.per_token_entropy_present_count
+    right_len_ok = right.per_token_entropy_present_count == 0 or right.per_token_entropy_plausible_len_count == right.per_token_entropy_present_count
+    _status(
+        "PASS" if left_len_ok and right_len_ok else "FAIL",
+        (
+            "per_token_entropy length plausibility vs top-k positions "
+            f"left={left.per_token_entropy_plausible_len_count}/{left.per_token_entropy_present_count} "
+            f"right={right.per_token_entropy_plausible_len_count}/{right.per_token_entropy_present_count}"
+        ),
     )
 
-    print("\nNote: this checks sanity/shape only. It does not require exact logit equality.")
+    left_gap_len_ok = left.per_token_top1_gap_present_count == 0 or left.per_token_top1_gap_plausible_len_count == left.per_token_top1_gap_present_count
+    right_gap_len_ok = right.per_token_top1_gap_present_count == 0 or right.per_token_top1_gap_plausible_len_count == right.per_token_top1_gap_present_count
+    _status(
+        "PASS" if left_gap_len_ok and right_gap_len_ok else "FAIL",
+        (
+            "per_token_top1_gap length plausibility vs top-k positions "
+            f"left={left.per_token_top1_gap_plausible_len_count}/{left.per_token_top1_gap_present_count} "
+            f"right={right.per_token_top1_gap_plausible_len_count}/{right.per_token_top1_gap_present_count}"
+        ),
+    )
+
+    if left.selection_enabled or right.selection_enabled:
+        _status(
+            "PASS" if left.selection_enabled == right.selection_enabled else "WARN",
+            f"selection enabled flags left={left.selection_enabled} right={right.selection_enabled}",
+        )
+        _status(
+            "PASS" if left.selection_metadata_possible_count > 0 and right.selection_metadata_possible_count > 0 else "WARN",
+            (
+                "selection metadata feasibility when enabled "
+                f"left={left.selection_metadata_possible_count}/{left.record_count} "
+                f"right={right.selection_metadata_possible_count}/{right.record_count}"
+            ),
+        )
+
+    print(
+        "\nNote: this checks structural parity for selection-aware export readiness; "
+        "it does not require exact logit/probability equality."
+    )
 
 
 def main() -> None:

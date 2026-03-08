@@ -37,13 +37,28 @@ def _slice_window_fields(window_record: dict[str, Any], start: int, end: int) ->
 
 
 
+
+
+def _selection_config_from_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Resolve Stage A selection settings from a record into typed values."""
+    minimum_selected_positions = record.get("minimum_selected_positions_per_record")
+    return {
+        "enable_position_filtering": bool(record.get("enable_position_filtering", False)),
+        "entropy_threshold": None if record.get("entropy_threshold") is None else float(record.get("entropy_threshold")),
+        "top1_gap_threshold": None if record.get("top1_gap_threshold") is None else float(record.get("top1_gap_threshold")),
+        "selection_window_radius": int(record.get("selection_window_radius", 0)),
+        "selection_mode": str(record.get("selection_mode", "none")),
+        "minimum_selected_positions_per_record": None
+        if minimum_selected_positions is None
+        else int(minimum_selected_positions),
+    }
+
 def _build_selection_mask(record: dict[str, Any]) -> tuple[list[bool], dict[str, Any]]:
     per_token_entropy = record.get("per_token_entropy")
     per_token_top1_gap = record.get("per_token_top1_gap")
-    entropy_threshold_raw = record.get("entropy_threshold")
-    top1_gap_threshold_raw = record.get("top1_gap_threshold")
-    entropy_threshold = None if entropy_threshold_raw is None else float(entropy_threshold_raw)
-    top1_gap_threshold = None if top1_gap_threshold_raw is None else float(top1_gap_threshold_raw)
+    selection_config = _selection_config_from_record(record)
+    entropy_threshold = selection_config["entropy_threshold"]
+    top1_gap_threshold = selection_config["top1_gap_threshold"]
 
     if entropy_threshold is None and top1_gap_threshold is None:
         raise ValueError(
@@ -51,8 +66,7 @@ def _build_selection_mask(record: dict[str, Any]) -> tuple[list[bool], dict[str,
         )
 
     selection_combine_mode = str(record.get("selection_combine_mode", "union"))
-    minimum_selected_positions = record.get("minimum_selected_positions_per_record")
-    minimum_selected = None if minimum_selected_positions is None else int(minimum_selected_positions)
+    minimum_selected = selection_config["minimum_selected_positions_per_record"]
 
     mask = select_positions(
         per_token_entropy=per_token_entropy if isinstance(per_token_entropy, list) else None,
@@ -67,7 +81,7 @@ def _build_selection_mask(record: dict[str, Any]) -> tuple[list[bool], dict[str,
         "combine_mode": selection_combine_mode,
         "entropy_threshold": entropy_threshold,
         "top1_gap_threshold": top1_gap_threshold,
-        "selection_window_radius": int(record.get("selection_window_radius", 0)),
+        "selection_window_radius": selection_config["selection_window_radius"],
         "minimum_selected_positions_per_record": minimum_selected,
         "total_selected_positions_in_record": int(sum(1 for v in mask if v)),
     }
@@ -82,47 +96,73 @@ def _selection_requirements(records: list[dict[str, Any]]) -> tuple[bool, bool]:
     need_entropy = False
     need_gap = False
     for record in records:
-        selection_mode = str(record.get("selection_mode", "none"))
-        if selection_mode == "none":
+        selection_config = _selection_config_from_record(record)
+        if (not selection_config["enable_position_filtering"]) or selection_config["selection_mode"] == "none":
             continue
-        if record.get("entropy_threshold") is not None:
+        if selection_config["entropy_threshold"] is not None:
             need_entropy = True
-        if record.get("top1_gap_threshold") is not None:
+        if selection_config["top1_gap_threshold"] is not None:
             need_gap = True
     return need_entropy, need_gap
+
+
+def selection_artifacts_for_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Compute Stage A selection mask/windows using the same runtime semantics."""
+    selection_config = _selection_config_from_record(record)
+    top_k_ids = record.get("top_k_ids")
+    dense_len = len(top_k_ids) if isinstance(top_k_ids, list) else 0
+
+    if (not selection_config["enable_position_filtering"]) or selection_config["selection_mode"] == "none":
+        dense_mask = [True for _ in range(dense_len)]
+        return {
+            "mask": dense_mask,
+            "selected_positions": [int(i) for i, keep in enumerate(dense_mask) if keep],
+            "windows": [(0, dense_len - 1)] if dense_len > 0 else [],
+            "policy": {"selection_mode": "none"},
+            "selection_mode": "none",
+            "selection_window_radius": 0,
+        }
+
+    mask, policy = _build_selection_mask(record)
+    selection_window_radius = selection_config["selection_window_radius"]
+    windows = mask_to_windows(mask, radius=selection_window_radius)
+    return {
+        "mask": mask,
+        "selected_positions": [int(i) for i, keep in enumerate(mask) if keep],
+        "windows": windows,
+        "policy": {"selection_mode": selection_config["selection_mode"], **policy},
+        "selection_mode": selection_config["selection_mode"],
+        "selection_window_radius": selection_window_radius,
+    }
 
 def _apply_position_aware_export(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply optional Stage A position-aware export policies."""
     out: list[dict[str, Any]] = []
 
     for record in records:
-        enable_position_filtering = bool(record.get("enable_position_filtering", False))
-        selection_mode = str(record.get("selection_mode", "none"))
+        artifacts = selection_artifacts_for_record(record)
+        selection_mode = str(artifacts["selection_mode"])
 
-        if not enable_position_filtering or selection_mode == "none":
+        if selection_mode == "none":
             out.append(record)
             continue
 
         if selection_mode == "position_mask":
-            mask, policy = _build_selection_mask(record)
-            selected_positions = [i for i, keep in enumerate(mask) if keep]
+            mask = [bool(v) for v in artifacts["mask"]]
+            selected_positions = [int(i) for i in artifacts["selected_positions"]]
             full_record = dict(record)
             extra_metadata = dict(full_record.get("extra_metadata") or {})
-            extra_metadata["selected_position_mask"] = [bool(v) for v in mask]
-            extra_metadata["selected_positions"] = [int(i) for i in selected_positions]
+            extra_metadata["selected_position_mask"] = mask
+            extra_metadata["selected_positions"] = selected_positions
             extra_metadata["selected_position_count"] = int(len(selected_positions))
-            extra_metadata["selection_policy"] = {
-                "selection_mode": selection_mode,
-                **policy,
-            }
+            extra_metadata["selection_policy"] = dict(artifacts["policy"])
             full_record["extra_metadata"] = extra_metadata
             out.append(full_record)
             continue
 
         if selection_mode == "selected_windows":
-            mask, policy = _build_selection_mask(record)
-            selection_window_radius = int(record.get("selection_window_radius", 0))
-            windows = mask_to_windows(mask, radius=selection_window_radius)
+            mask = [bool(v) for v in artifacts["mask"]]
+            windows = list(artifacts["windows"])
             if not windows:
                 continue
 
@@ -135,10 +175,7 @@ def _apply_position_aware_export(records: list[dict[str, Any]]) -> list[dict[str
                 extra_metadata["selected_window_start"] = int(start)
                 extra_metadata["selected_window_end"] = int(end)
                 extra_metadata["selected_position_count"] = int(selected_in_window)
-                extra_metadata["selection_policy"] = {
-                    "selection_mode": selection_mode,
-                    **policy,
-                }
+                extra_metadata["selection_policy"] = dict(artifacts["policy"])
                 window_record["extra_metadata"] = extra_metadata
                 out.append(window_record)
             continue
