@@ -1,4 +1,7 @@
 [data]
+# To run distillation over a built corpus mixture, point to a split folder, for example:
+# input_path = "data/corpora/base_mix_v1/train"
+# file_glob = "*.txt"
 input_path = "./data/raw"
 file_glob = "*.txt"
 encoding = "utf-8"

@@ -574,3 +574,13 @@ def load_config(path: str | Path) -> PipelineConfig:
 
 # Backward-compatible alias from the initial scaffold.
 load_config_toml = load_config
+
+from distill_factory.corpus.schema import (
+    CorpusMixtureConfig,
+    MixtureBuildConfig,
+    MixtureDatasetConfig,
+    MixtureGroupConfig,
+    SourceDatasetCacheConfig,
+    SourceExtractionConfig,
+    load_corpus_mixture_config,
+)
