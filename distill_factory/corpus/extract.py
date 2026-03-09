@@ -138,6 +138,9 @@ def _extract_split(
         if len(buffered_rows) < source.group_size:
             continue
 
+        if max_docs is not None and (existing_docs + groups_written) >= max_docs:
+            break
+
         doc_index = existing_docs + groups_written + 1
         doc_stem = f"doc_{doc_index:08d}"
 
@@ -164,9 +167,6 @@ def _extract_split(
 
         groups_written += 1
         buffered_rows = []
-
-        if max_docs is not None and (existing_docs + groups_written) >= max_docs:
-            break
 
     return {
         "canonical_split": canonical_split,

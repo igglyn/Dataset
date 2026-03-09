@@ -22,6 +22,8 @@ def source_config_payload(source: SourceDatasetCacheConfig) -> dict[str, Any]:
         "text_field": source.text_field,
         "group_size": source.group_size,
         "max_docs_per_split": source.max_docs_per_split,
+        "min_bytes": source.min_bytes,
+        "max_bytes": source.max_bytes,
     }
 
 
