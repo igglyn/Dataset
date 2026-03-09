@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from distill_factory.corpus.mix import build_corpus_mixture_from_cache
 from distill_factory.corpus.schema import load_corpus_mixture_config
