@@ -10,6 +10,292 @@ This is **not** a model-training repository.
 - **Stage B**: long-context structure teacher
 - **Stage C**: refinement teacher
 
+## Reusable source-cache + corpus-mixture workflow
+
+The repository now supports a **two-layer corpus design** so dataset extraction is decoupled from final corpus composition:
+
+1. **Source extraction layer** (`[source_extraction]`)
+   - define each reusable source dataset once (`source_name`, `source_type`, Hugging Face dataset/config, text field, split mapping, grouping controls)
+   - extract and normalize into a persistent cache directory (`cache_dir`)
+   - optionally cap extraction volume per split (`max_docs_per_split`)
+   - optional source byte filters at extraction time (`min_bytes`, `max_bytes`)
+
+2. **Mixture build layer** (`[mixture_build]`)
+   - define semantic groups (for example: `code`, `general_knowledge`, `narrative`)
+   - assign cached datasets to each group
+   - set a percentage per group and a required `target_documents`
+   - set `random_seed` for reproducible sampling/remixing
+
+This lets you cache expensive source downloads/extraction once, then rebuild many corpus variants without re-downloading or re-extracting.
+
+Schema entry points:
+- `distill_factory/corpus/schema.py`
+- `distill_factory/corpus/__init__.py`
+- `distill_factory/config/schema.py` (re-exported schema types/loader)
+
+Example config:
+- `configs/examples/corpus_mixture.toml`
+
+Validation guarantees in the corpus-mixture schema:
+- `target_documents` is required and must be `> 0`
+- all group percentages must sum to exactly `100`
+- mixture groups can only reference datasets declared in the source cache section
+
+## Source dataset extraction cache layout
+
+Source extraction now supports deterministic cached document materialization under `data/sources/<source_name>/`.
+
+Output layout:
+
+```text
+data/sources/<source_name>/
+  train/
+  eval/
+  validation/
+  manifest.json
+```
+
+Each split stores grouped text docs and sidecar metadata:
+
+- `doc_00000001.txt`
+- `doc_00000001.meta.json`
+
+Sidecar metadata includes provenance and reproducibility fields such as:
+`source_name`, `source_type`, `hf_dataset`, `hf_config`, `split`, `upstream_split`, `row_ordinal_start`, `row_ordinal_end`, `text_field`, `group_size`, and extraction timestamp.
+
+Current extractor scope:
+- Hugging Face streaming datasets (`source_type = "huggingface"`)
+- deterministic row grouping by `group_size`
+- split-specific extraction with clear failure when a requested split mapping cannot be loaded
+- manifest-based cache safety for reuse across many future mixture builds
+
+`manifest.json` is now the cache contract for reuse and includes at least:
+- source identity/type (`source_name`, `source_type`)
+- dataset identifier/config (`hf_dataset`, `hf_config`)
+- split mapping used
+- text extraction settings (`text_field`, `group_size`, optional `max_docs_per_split`)
+- `extracted_doc_counts` per split
+- extraction timestamp
+- config fingerprint (`config_fingerprint`)
+
+Re-run behavior:
+- if existing cache fingerprint matches config, extraction is skipped (safe reuse)
+- if fingerprint differs, extraction fails clearly unless `--refresh` / `--overwrite` is set
+- if `manifest.json` is missing in an existing cache dir, extraction fails clearly unless refresh is explicit
+
+Run extraction for one source from config:
+
+```bash
+python scripts/extract_source_dataset.py \
+  --config configs/examples/corpus_mixture.toml \
+  --source-name the_stack_python \
+  --cache-root data/sources
+```
+
+Inspect planned action without extracting:
+
+```bash
+python scripts/extract_source_dataset.py \
+  --config configs/examples/corpus_mixture.toml \
+  --source-name the_stack_python \
+  --cache-root data/sources \
+  --dry-run
+```
+
+Force overwrite/refresh when config changes:
+
+```bash
+python scripts/extract_source_dataset.py \
+  --config configs/examples/corpus_mixture.toml \
+  --source-name the_stack_python \
+  --cache-root data/sources \
+  --refresh
+```
+
+## Build mixed corpora from cached sources
+
+After sources are cached under `data/sources/<source_name>/...`, you can build new corpora without re-downloading or re-extracting datasets.
+
+Mixture builder characteristics:
+- consumes cached docs only (no Hugging Face download/extraction path)
+- supports config-defined groups/datasets, percentage shares, `target_documents`, and `random_seed`
+- validates group percentages sum to `100`
+- deterministic sampling per split (`train`/`eval`/`validation`) from cached docs
+- writes per-output-doc provenance sidecars with source dataset/split/group and original cached doc path/id
+- records requested vs realized composition in output `manifest.json` for auditing and future remixes
+
+Output layout:
+
+```text
+data/corpora/<mixture_name>/
+  train/
+  eval/
+  validation/
+  manifest.json
+```
+
+Group expression in config (explicit and auditable):
+
+```toml
+[mixture_build]
+target_documents = 1000000
+random_seed = 42
+min_bytes = 128
+max_bytes = 180000
+depletion_policy = "rebalance" # "rebalance" | "strict" | "record_only"
+
+[[mixture_build.groups]]
+group_name = "code"
+percentage = 35
+dataset_names = ["the_stack_python"]
+
+[[mixture_build.groups]]
+group_name = "general_knowledge"
+percentage = 40
+dataset_names = ["wikipedia_en"]
+
+[[mixture_build.groups]]
+group_name = "narrative"
+percentage = 25
+dataset_names = ["bookcorpus"]
+```
+
+Filtering order (explicit):
+1. **Source extraction filtering** (`source_extraction.datasets[].min_bytes/max_bytes`) is applied first, before grouped docs are written to `data/sources/...`.
+2. **Mixture filtering** (`mixture_build.min_bytes/max_bytes`) is applied later, when selecting cached docs for `data/corpora/...`.
+
+This keeps filtering deterministic and auditable at both layers.
+
+Validation behavior:
+- group percentages must sum to exactly `100`
+- each `dataset_names` entry must exist in `[source_extraction].datasets`
+- `target_documents` must be `> 0`
+- split availability is checked at build time for each referenced cached source split
+
+Dataset overlap across groups:
+- overlap is allowed intentionally (a dataset may appear in multiple groups), but this should be done deliberately because it changes sampling behavior and effective source weighting.
+
+Output manifest (`data/corpora/<mixture_name>/manifest.json`) includes at least:
+- `mixture_name`
+- `target_documents`
+- `random_seed`
+- requested group percentages (`requested_group_percentages`)
+- configured depletion policy (`depletion_policy`)
+- realized document counts by group (`realized_document_counts_by_group`)
+- realized document counts by source dataset (`realized_document_counts_by_source_dataset`)
+- realized split counts (`realized_split_counts`)
+- applied mixture byte filters (`mixture_min_bytes`, `mixture_max_bytes`)
+- source cache manifests/references used (`source_cache_references`)
+- split-level filtered-doc counters when filters apply (`filtered_below_min_bytes`, `filtered_above_max_bytes`)
+- creation timestamp (`created_at`)
+
+Deterministic sampling inputs:
+- mixture config (group percentages, group datasets, target documents)
+- `random_seed`
+- cached source file contents/layout (`doc_*.txt` under each split)
+
+Depletion policy is configurable via `mixture_build.depletion_policy`:
+- `"rebalance"` (default):
+  - sample each group to its requested share first
+  - deterministically fill shortfall from remaining groups when possible
+  - if total cache is still insufficient, record explicit shortfall warnings
+- `"strict"`:
+  - fail fast if any split/group cannot satisfy requested proportions
+  - no partial build output is produced
+- `"record_only"`:
+  - do not rebalance across groups
+  - build only what each group can provide and record explicit shortfall
+
+Determinism is preserved under all policies (config + seed + cached docs determine outcomes).
+
+If cached source data is insufficient for requested shares, the builder does **not** silently hide this:
+- manifest records configured `depletion_policy`
+- manifest sets `composition_deviation = true` when realized output is short
+- manifest stores explicit warning entries in `warnings`
+- manifest includes requested vs realized totals and per-split realized counts
+- CLI prints warnings after build so deviations are visible immediately
+
+Build command:
+
+```bash
+python scripts/build_text_corpus.py \
+  --config configs/examples/corpus_mixture.toml \
+  --mixture-name base_mix_v1 \
+  --cache-root data/sources \
+  --output-root data/corpora
+```
+
+Dry-run (path/info only):
+
+```bash
+python scripts/build_text_corpus.py \
+  --config configs/examples/corpus_mixture.toml \
+  --mixture-name base_mix_v1 \
+  --dry-run
+```
+
+## Inspect cached sources and built corpora
+
+Use the terminal inspector to quickly sanity-check either:
+- a cached source dataset directory (`data/sources/<source_name>/`), or
+- a built mixed corpus directory (`data/corpora/<mixture_name>/`).
+
+Inspector command:
+
+```bash
+python scripts/inspect_text_corpus.py data/sources/the_stack_python
+python scripts/inspect_text_corpus.py data/corpora/base_mix_v1
+```
+
+What it prints:
+- manifest summary (core fields + key list)
+- split document counts (`train`/`eval`/`validation`)
+- document counts by `source_name` (if sidecar metadata has it)
+- document counts by `group_name` (if sidecar metadata has it)
+- one sample text document preview + its metadata sidecar
+
+Optional text preview length:
+
+```bash
+python scripts/inspect_text_corpus.py data/corpora/base_mix_v1 --preview-chars 800
+```
+
+## End-to-end: from reusable corpus cache to distillation pipeline
+
+You can connect the new corpus cache/mixture workflow directly to the existing distillation pipeline with this sequence:
+
+1. **Extract source datasets once** (cached under `data/sources/<source_name>/...`):
+
+```bash
+python scripts/extract_source_dataset.py   --config configs/examples/corpus_mixture.toml   --source-name the_stack_python   --cache-root data/sources
+```
+
+2. **Build a mixed corpus** (materialized under `data/corpora/<mixture_name>/...`):
+
+```bash
+python scripts/build_text_corpus.py   --config configs/examples/corpus_mixture.toml   --mixture-name base_mix_v1   --cache-root data/sources   --output-root data/corpora
+```
+
+3. **Point the distillation pipeline input at the built corpus split** (typically `train/`):
+   - `input_path = "data/corpora/base_mix_v1/train"`
+   - `file_glob = "*.txt"`
+
+4. **Run existing pipeline tooling**.
+
+Example: Stage A validation against a built corpus:
+
+```bash
+python scripts/validate_stage_a.py --config configs/examples/default.toml
+```
+
+Example: dataset build entrypoint against the same corpus input:
+
+```bash
+python scripts/build_dataset.py --config configs/examples/default.toml
+```
+
+This keeps source extraction reusable and lets you regenerate new corpus mixtures while reusing existing distillation pipeline entrypoints unchanged.
+
 ## Current status
 
 - Repository scaffolding and lightweight data pipeline modules are included.

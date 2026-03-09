@@ -1,0 +1,60 @@
+[source_extraction]
+cache_dir = "data/source_cache"
+
+[[source_extraction.datasets]]
+source_name = "the_stack_python"
+source_type = "huggingface"
+hf_dataset = "bigcode/the-stack"
+hf_config = "python"
+text_field = "content"
+train_split = "train"
+group_size = 2048
+max_docs_per_split = 250000
+min_bytes = 32
+max_bytes = 200000
+
+[[source_extraction.datasets]]
+source_name = "wikipedia_en"
+source_type = "huggingface"
+hf_dataset = "wikipedia"
+hf_config = "20220301.en"
+text_field = "text"
+split_mapping = { train = "train" }
+group_size = 1024
+min_bytes = 64
+max_bytes = 120000
+
+[[source_extraction.datasets]]
+source_name = "bookcorpus"
+source_type = "huggingface"
+hf_dataset = "bookcorpus"
+text_field = "text"
+train_split = "train"
+group_size = 1024
+min_bytes = 64
+max_bytes = 150000
+
+[mixture_build]
+target_documents = 1000000
+random_seed = 42
+min_bytes = 128
+max_bytes = 180000
+depletion_policy = "rebalance"
+
+[[mixture_build.groups]]
+group_name = "code"
+percentage = 35
+
+dataset_names = ["the_stack_python"]
+
+[[mixture_build.groups]]
+group_name = "general_knowledge"
+percentage = 40
+
+dataset_names = ["wikipedia_en"]
+
+[[mixture_build.groups]]
+group_name = "narrative"
+percentage = 25
+
+dataset_names = ["bookcorpus"]
