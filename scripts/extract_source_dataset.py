@@ -13,6 +13,29 @@ if __package__ is None or __package__ == "":
 from distill_factory.corpus.extract import extract_source_to_cache, inspect_source_cache_state
 from distill_factory.corpus.schema import load_corpus_mixture_config
 
+def _warn_if_split_mapping_reuses_upstream(source) -> None:
+    inverse: dict[str, list[str]] = {}
+    for canonical_split, upstream_split in source.split_mapping.items():
+        inverse.setdefault(upstream_split, []).append(canonical_split)
+
+    reused = {
+        upstream_split: sorted(canonical_splits)
+        for upstream_split, canonical_splits in inverse.items()
+        if len(canonical_splits) > 1
+    }
+    if not reused:
+        return
+
+    details = "; ".join(
+        f"{upstream_split} -> {','.join(canonical_splits)}"
+        for upstream_split, canonical_splits in sorted(reused.items())
+    )
+    print(
+        "Warning: one upstream split is mapped to multiple canonical splits; "
+        "extraction runs once per canonical split so total extracted docs can scale accordingly. "
+        f"Mappings: {details}"
+    )
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -50,6 +73,7 @@ def main() -> int:
 
     cache_root = Path(args.cache_root)
     state = inspect_source_cache_state(source=source, cache_root=cache_root)
+    _warn_if_split_mapping_reuses_upstream(source)
 
     if args.dry_run:
         print(f"Dry-run: source='{source.source_name}' state='{state['state']}' cache_root='{cache_root}'")

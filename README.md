@@ -19,6 +19,7 @@ The repository now supports a **two-layer corpus design** so dataset extraction 
    - extract and normalize into a persistent cache directory (`cache_dir`)
    - optionally cap extraction volume per split (`max_docs_per_split`)
    - optional source byte filters at extraction time (`min_bytes`, `max_bytes`)
+   - note: byte-filter settings are part of cache identity; changing them invalidates reuse unless refreshed
 
 2. **Mixture build layer** (`[mixture_build]`)
    - define semantic groups (for example: `code`, `general_knowledge`, `narrative`)
@@ -66,6 +67,7 @@ Sidecar metadata includes provenance and reproducibility fields such as:
 Current extractor scope:
 - Hugging Face streaming datasets (`source_type = "huggingface"`)
 - deterministic row grouping by `group_size`
+- `max_docs_per_split` enforcement is per canonical split (`train`/`eval`/`validation`) and is checked before writing each grouped document, so extraction does not overshoot caps
 - split-specific extraction with clear failure when a requested split mapping cannot be loaded
 - manifest-based cache safety for reuse across many future mixture builds
 
@@ -73,10 +75,17 @@ Current extractor scope:
 - source identity/type (`source_name`, `source_type`)
 - dataset identifier/config (`hf_dataset`, `hf_config`)
 - split mapping used
-- text extraction settings (`text_field`, `group_size`, optional `max_docs_per_split`)
+- text extraction settings (`text_field`, `group_size`, optional `max_docs_per_split`, `min_bytes`, `max_bytes`)
 - `extracted_doc_counts` per split
 - extraction timestamp
 - config fingerprint (`config_fingerprint`)
+
+
+
+Split-mapping caveat (important for totals):
+- extraction runs independently for canonical `train`, `eval`, and `validation`
+- if two or more canonical splits map to the same upstream split, each canonical split performs its own extraction pass
+- as a result, total extracted docs can scale across canonical splits even when they read from the same upstream data
 
 Re-run behavior:
 - if existing cache fingerprint matches config, extraction is skipped (safe reuse)
