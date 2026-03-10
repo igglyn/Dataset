@@ -18,6 +18,10 @@ RuntimeBackendType = Literal["hf", "vllm", "llamacpp_server"]
 def teacher_name_to_backend_type(teacher_name: str) -> RuntimeBackendType | None:
     """Map teacher identifiers to runtime backend types when known."""
     mapping: dict[str, RuntimeBackendType] = {
+        "dummy": "hf",
+        "bulk_grounding_teacher": "hf",
+        "long_context_structure_teacher": "hf",
+        "refinement_teacher": "hf",
         "hf_causal_lm": "hf",
         "vllm_causal_lm": "vllm",
         "llamacpp_server": "llamacpp_server",
