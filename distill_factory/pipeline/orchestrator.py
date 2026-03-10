@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from time import perf_counter
 from random import Random
@@ -95,6 +96,8 @@ def _apply_stage_mixture(
 ) -> list[dict[str, Any]]:
     if not records:
         return records
+
+    _bind_stage_runtime_env(stage_name, cfg)
 
     teacher_names = [m.teacher_name for m in mixture]
     ratios = [float(m.ratio) for m in mixture]
@@ -619,3 +622,17 @@ def run_pipeline(config_path: str) -> dict[str, Any]:
         "stop_after_stage": cfg.output.stop_after_stage,
         "teacher_startup_checks": startup_checks,
     }
+
+
+def _bind_stage_runtime_env(stage_name: str, cfg: Any) -> None:
+    """Bind stage-specific runtime options to backend env vars before teacher creation."""
+    stage_cfg = getattr(cfg, stage_name)
+    os.environ["DISTILL_LLAMACPP_BASE_URL"] = str(stage_cfg.llama_base_url)
+    os.environ["DISTILL_LLAMACPP_MODEL_HINT"] = "" if stage_cfg.llama_model_hint is None else str(stage_cfg.llama_model_hint)
+    os.environ["DISTILL_LLAMACPP_REQUEST_TIMEOUT"] = str(float(stage_cfg.llama_request_timeout))
+    os.environ["DISTILL_LLAMACPP_TOP_K"] = str(int(stage_cfg.top_k))
+    os.environ["DISTILL_LLAMACPP_TEMPERATURE"] = str(float(stage_cfg.temperature))
+
+    max_context = getattr(stage_cfg, "max_context", None)
+    if max_context is not None:
+        os.environ["DISTILL_LLAMACPP_MAX_CONTEXT"] = str(int(max_context))
