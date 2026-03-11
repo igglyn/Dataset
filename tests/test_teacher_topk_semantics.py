@@ -412,6 +412,62 @@ def test_hf_infer_topk_per_token_top1_gap_is_zero_when_topk_is_one() -> None:
     assert all(float(v) == 0.0 for v in out["per_token_top1_gap"])
 
 
+def test_hf_infer_topk_uses_zero_padding_token_ids() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _FakeTokenizer:
+        vocab_size = 7
+
+        def __call__(self, texts: list[str], return_tensors: str, padding: bool, truncation: bool, max_length: int):
+            _ = (texts, return_tensors, padding, truncation, max_length)
+            # second sequence is padded at final position with non-zero id to
+            # ensure teacher rewrites padded token ids to 0.
+            input_ids = torch.tensor([[4, 5, 6], [3, 2, 9]], dtype=torch.long)
+            attention_mask = torch.tensor([[1, 1, 1], [1, 1, 0]], dtype=torch.long)
+            return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    class _FakeModelOut:
+        def __init__(self, logits):
+            self.logits = logits
+            self.hidden_states = None
+
+    class _FakeModel:
+        def __init__(self):
+            self.device = torch.device("cpu")
+            self.last_input_ids = None
+
+        def __call__(self, **kwargs):
+            self.last_input_ids = kwargs["input_ids"].detach().cpu()
+            logits = torch.tensor(
+                [
+                    [
+                        [0.0, 2.0, 1.0, -1.0, -2.0, -3.0, -4.0],
+                        [0.0, 1.0, 2.0, -1.0, -2.0, -3.0, -4.0],
+                        [0.0, 0.5, 0.1, -1.0, -2.0, -3.0, -4.0],
+                    ],
+                    [
+                        [0.0, 1.5, 1.0, -1.0, -2.0, -3.0, -4.0],
+                        [0.0, 1.2, 1.1, -1.0, -2.0, -3.0, -4.0],
+                        [0.0, 0.2, 0.1, -1.0, -2.0, -3.0, -4.0],
+                    ],
+                ],
+                dtype=torch.float32,
+            )
+            return _FakeModelOut(logits=logits)
+
+        def eval(self):
+            return None
+
+    teacher = HFCausalLMTeacher(model_name_or_path="dummy", max_context=16, batch_size=2)
+    teacher._tokenizer = _FakeTokenizer()
+    teacher._model = _FakeModel()
+
+    out = teacher.infer_topk([{"raw_bytes": b"abc", "top_k": 2}, {"raw_bytes": b"xy", "top_k": 2}])
+    assert len(out) == 2
+    assert teacher._model.last_input_ids is not None
+    assert int(teacher._model.last_input_ids[1, 2].item()) == 0
+
+
 
 def test_vllm_infer_topk_emits_per_token_selection_signals_when_enabled() -> None:
     class _FakeTokenizer:
