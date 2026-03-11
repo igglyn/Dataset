@@ -80,8 +80,8 @@ def test_vllm_validation_helper_accepts_valid_semantics() -> None:
     teacher = VLLMCausalLMTeacher(model_name_or_path="dummy", max_context=16, batch_size=1)
     teacher._tokenizer = _TokenizerStub(vocab_size=64)
 
-    top_k_ids = [[9, 3, 2], [5, 4, 0]]
-    top_k_logprobs = [[-0.2, -0.4, -1.0], [-0.5, -0.6, -0.7]]
+    top_k_ids = [[9, 3, 2], [5, 4, 0], [0, 0, 0]]
+    top_k_logprobs = [[-0.2, -0.4, -1.0], [-0.5, -0.6, -0.7], [0.0, 0.0, 0.0]]
     teacher._validate_topk_semantics(top_k_ids=top_k_ids, top_k_logprobs=top_k_logprobs, entropy=0.5, token_length=4)
 
 
@@ -358,6 +358,8 @@ def test_hf_infer_topk_emits_per_token_selection_signals_when_enabled() -> None:
     assert all(math.isfinite(float(v)) for v in out["per_token_entropy"])
     assert all(math.isfinite(float(v)) for v in out["per_token_top1_gap"])
     assert all(float(v) >= 0.0 for v in out["per_token_top1_gap"])
+    assert any(0 in row for row in out["top_k_ids"])
+    assert any(len(set(row)) == 1 for row in out["top_k_logprobs"])
 
 
 def test_hf_infer_topk_per_token_top1_gap_is_zero_when_topk_is_one() -> None:
@@ -465,12 +467,14 @@ def test_vllm_infer_topk_emits_per_token_selection_signals_when_enabled() -> Non
 
     assert "per_token_entropy" in out
     assert "per_token_top1_gap" in out
-    assert len(out["top_k_ids"]) <= max(int(out["teacher_input_token_length"]) - 1, 0)
+    assert len(out["top_k_ids"]) == max(int(out["teacher_input_token_length"]) - 1, 0)
     assert len(out["per_token_entropy"]) == len(out["top_k_ids"])
     assert len(out["per_token_top1_gap"]) == len(out["top_k_ids"])
     assert all(math.isfinite(float(v)) for v in out["per_token_entropy"])
     assert all(math.isfinite(float(v)) for v in out["per_token_top1_gap"])
     assert all(float(v) >= 0.0 for v in out["per_token_top1_gap"])
+    assert any(0 in row for row in out["top_k_ids"])
+    assert any(len(set(row)) == 1 for row in out["top_k_logprobs"])
 
 
 def test_vllm_infer_topk_per_token_top1_gap_is_zero_when_row_has_single_candidate() -> None:
