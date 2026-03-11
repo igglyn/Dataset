@@ -28,6 +28,7 @@ device_map = "auto"
 torch_dtype = "float16"
 max_context = 2048
 batch_size = 1
+hf_pad_token_id = 0
 
 [stage_b]
 enabled = true
