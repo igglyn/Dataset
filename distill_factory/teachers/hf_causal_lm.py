@@ -54,6 +54,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         extract_hidden_summary: bool = False,
         emit_per_token_entropy: bool = False,
         emit_per_token_top1_gap: bool = False,
+        hf_pad_token_id: int | None = None,
     ) -> None:
         self.model_name_or_path = model_name_or_path
         self.device_map = device_map
@@ -63,6 +64,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         self.extract_hidden_summary = bool(extract_hidden_summary)
         self.emit_per_token_entropy = bool(emit_per_token_entropy)
         self.emit_per_token_top1_gap = bool(emit_per_token_top1_gap)
+        self.hf_pad_token_id = None if hf_pad_token_id is None else int(hf_pad_token_id)
 
         self._tokenizer = None
         self._model = None
@@ -123,11 +125,17 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
 
         dtype = _DTYPE_MAP.get(self.torch_dtype, torch.float32)
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path)
+        if self.hf_pad_token_id is not None:
+            self._tokenizer.pad_token_id = int(self.hf_pad_token_id)
+
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_name_or_path,
             torch_dtype=dtype,
             device_map=self.device_map,
         )
+        if self.hf_pad_token_id is not None and hasattr(self._model, "config"):
+            self._model.config.pad_token_id = int(self.hf_pad_token_id)
+
         self._model.eval()
 
 
@@ -219,6 +227,8 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
             raise ModuleNotFoundError("transformers is required for HFCausalLMTeacher tokenizer diagnostics.")
         if self._tokenizer is None:
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path)
+            if self.hf_pad_token_id is not None:
+                self._tokenizer.pad_token_id = int(self.hf_pad_token_id)
 
     def token_lengths(self, texts: list[str]) -> list[int]:
         """Return token counts for input texts without running teacher inference."""

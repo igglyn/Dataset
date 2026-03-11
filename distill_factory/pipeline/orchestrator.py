@@ -636,3 +636,12 @@ def _bind_stage_runtime_env(stage_name: str, cfg: Any) -> None:
     max_context = getattr(stage_cfg, "max_context", None)
     if max_context is not None:
         os.environ["DISTILL_LLAMACPP_MAX_CONTEXT"] = str(int(max_context))
+
+    os.environ["DISTILL_HF_MODEL_NAME_OR_PATH"] = str(getattr(stage_cfg, "model_name_or_path", "distilgpt2"))
+    os.environ["DISTILL_HF_DEVICE_MAP"] = str(getattr(stage_cfg, "device_map", "auto"))
+    os.environ["DISTILL_HF_TORCH_DTYPE"] = str(getattr(stage_cfg, "torch_dtype", "float16"))
+    os.environ["DISTILL_HF_MAX_CONTEXT"] = str(int(getattr(stage_cfg, "max_context", 2048)))
+    os.environ["DISTILL_HF_BATCH_SIZE"] = str(int(getattr(stage_cfg, "batch_size", 1)))
+
+    hf_pad_token_id = getattr(stage_cfg, "hf_pad_token_id", None)
+    os.environ["DISTILL_HF_PAD_TOKEN_ID"] = "" if hf_pad_token_id is None else str(int(hf_pad_token_id))

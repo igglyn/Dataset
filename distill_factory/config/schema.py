@@ -87,6 +87,7 @@ class StageAConfig:
     llama_model_hint: str | None
     llama_request_timeout: float
     extract_hidden_summary: bool
+    hf_pad_token_id: int | None
     enable_position_filtering: bool
     entropy_threshold: float | None
     top1_gap_threshold: float | None
@@ -452,6 +453,17 @@ def load_config(path: str | Path) -> PipelineConfig:
         if timeout <= 0:
             raise ValueError(f"[{stage_key}].llama_request_timeout must be > 0")
 
+    def _parse_hf_pad_token_id(stage_key: str, stage_table: dict[str, Any]) -> int | None:
+        raw = stage_table.get("hf_pad_token_id")
+        if raw is None:
+            return None
+        pad_token_id = int(raw)
+        if pad_token_id < 0:
+            raise ValueError(f"[{stage_key}].hf_pad_token_id must be >= 0 when set")
+        return pad_token_id
+
+    stage_a_hf_pad_token_id = _parse_hf_pad_token_id("stage_a", stage_a_cfg)
+
     _validate_llamacpp_backend("stage_a", stage_a_cfg, stage_a_backend_type)
     _validate_llamacpp_backend("stage_b", stage_b_cfg, stage_b_backend_type)
     _validate_llamacpp_backend("stage_c", stage_c_cfg, stage_c_backend_type)
@@ -463,6 +475,13 @@ def load_config(path: str | Path) -> PipelineConfig:
     os.environ["DISTILL_LLAMACPP_MAX_CONTEXT"] = str(int(stage_a_cfg.get("max_context", 2048)))
     os.environ["DISTILL_LLAMACPP_TOP_K"] = str(int(stage_a_cfg.get("top_k", 5)))
     os.environ["DISTILL_LLAMACPP_TEMPERATURE"] = str(float(stage_a_cfg.get("temperature", 0.0)))
+
+    os.environ["DISTILL_HF_MODEL_NAME_OR_PATH"] = str(stage_a_cfg.get("model_name_or_path", "distilgpt2"))
+    os.environ["DISTILL_HF_DEVICE_MAP"] = str(stage_a_cfg.get("device_map", "auto"))
+    os.environ["DISTILL_HF_TORCH_DTYPE"] = str(stage_a_cfg.get("torch_dtype", "float16"))
+    os.environ["DISTILL_HF_MAX_CONTEXT"] = str(int(stage_a_cfg.get("max_context", 2048)))
+    os.environ["DISTILL_HF_BATCH_SIZE"] = str(int(stage_a_cfg.get("batch_size", 1)))
+    os.environ["DISTILL_HF_PAD_TOKEN_ID"] = "" if stage_a_hf_pad_token_id is None else str(int(stage_a_hf_pad_token_id))
 
     os.environ["DISTILL_FACTORY_LOG_TOKEN_LENGTHS"] = "1" if log_token_lengths else "0"
     os.environ["DISTILL_FACTORY_LOG_BYTE_LENGTHS"] = "1" if log_byte_lengths else "0"
@@ -527,6 +546,7 @@ def load_config(path: str | Path) -> PipelineConfig:
             llama_model_hint=_optional_str(stage_a_cfg.get("llama_model_hint")),
             llama_request_timeout=float(stage_a_cfg.get("llama_request_timeout", 30.0)),
             extract_hidden_summary=bool(stage_a_cfg.get("extract_hidden_summary", False)),
+            hf_pad_token_id=stage_a_hf_pad_token_id,
             enable_position_filtering=stage_a_enable_position_filtering,
             entropy_threshold=stage_a_entropy_threshold,
             top1_gap_threshold=stage_a_top1_gap_threshold,
