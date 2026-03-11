@@ -23,7 +23,7 @@ from distill_factory.storage.reader import read_jsonl_records
 
 def _toml_literal(value: Any) -> str:
     if value is None:
-        return "null"
+        return "\"\""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
@@ -46,6 +46,8 @@ def _write_toml(path: Path, cfg: dict[str, Any]) -> None:
         values = cfg.get(section, {})
         lines.append(f"[{section}]")
         for key, value in values.items():
+            if value is None:
+                continue
             lines.append(f"{key} = {_toml_literal(value)}")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")

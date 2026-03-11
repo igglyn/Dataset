@@ -21,7 +21,7 @@ from distill_factory.utils.logging import format_timing_report
 
 def _toml_literal(value: Any) -> str:
     if value is None:
-        return "null"
+        return "\"\""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
@@ -41,6 +41,8 @@ def _write_toml(path: Path, cfg: dict[str, Any]) -> None:
     for section in ("data", "input", "output", "stage_a", "stage_b", "stage_c"):
         lines.append(f"[{section}]")
         for k, v in cfg.get(section, {}).items():
+            if v is None:
+                continue
             lines.append(f"{k} = {_toml_literal(v)}")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")

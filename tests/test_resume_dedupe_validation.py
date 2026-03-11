@@ -54,7 +54,7 @@ normalize_newlines = true
 [output]
 output_dir = "{output_dir.as_posix()}"
 format = "jsonl"
-compression = null
+compression = ""
 max_records_per_shard = {max_records_per_shard}
 shard_prefix = "shard"
 resume = {str(resume).lower()}
