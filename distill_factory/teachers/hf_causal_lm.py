@@ -263,6 +263,12 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
                     max_length=self.max_context,
                 )
 
+                # Backend-facing padding convention: padding token ids are not
+                # surfaced externally, so force padded positions to token id 0.
+                # We retain attention_mask for true sequence lengths.
+                if "input_ids" in tokenized and "attention_mask" in tokenized:
+                    tokenized["input_ids"] = tokenized["input_ids"] * tokenized["attention_mask"].to(tokenized["input_ids"].dtype)
+
                 if hasattr(self._model, "device"):
                     device = self._model.device
                     tokenized = {k: v.to(device) for k, v in tokenized.items()}
