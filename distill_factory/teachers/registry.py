@@ -207,6 +207,7 @@ def _build_hf_causal_lm_teacher() -> Teacher:
     - DISTILL_HF_TORCH_DTYPE
     - DISTILL_HF_MAX_CONTEXT
     - DISTILL_HF_BATCH_SIZE
+    - DISTILL_HF_PAD_TOKEN_ID (optional int)
     """
     return HFCausalLMTeacher(
         model_name_or_path=os.getenv("DISTILL_HF_MODEL_NAME_OR_PATH", "distilgpt2"),
@@ -214,6 +215,11 @@ def _build_hf_causal_lm_teacher() -> Teacher:
         torch_dtype=os.getenv("DISTILL_HF_TORCH_DTYPE", "float16"),
         max_context=int(os.getenv("DISTILL_HF_MAX_CONTEXT", "2048")),
         batch_size=int(os.getenv("DISTILL_HF_BATCH_SIZE", "1")),
+        hf_pad_token_id=(
+            None
+            if os.getenv("DISTILL_HF_PAD_TOKEN_ID", "").strip() == ""
+            else int(os.getenv("DISTILL_HF_PAD_TOKEN_ID", "0"))
+        ),
     )
 
 

@@ -35,6 +35,11 @@ mode = "topk_logits"
 top_k = 7
 temperature = 0.1
 max_context = 1024
+model_name_or_path = "distilgpt2"
+device_map = "cpu"
+torch_dtype = "float32"
+batch_size = 3
+hf_pad_token_id = 0
 llama_base_url = "http://127.0.0.1:7001"
 llama_model_hint = "stage-a"
 llama_request_timeout = 11.0
@@ -75,6 +80,12 @@ llama_request_timeout = 33.0
     assert os.environ["DISTILL_LLAMACPP_TOP_K"] == "7"
     assert os.environ["DISTILL_LLAMACPP_TEMPERATURE"] == "0.1"
     assert os.environ["DISTILL_LLAMACPP_MAX_CONTEXT"] == "1024"
+    assert os.environ["DISTILL_HF_MODEL_NAME_OR_PATH"] == "distilgpt2"
+    assert os.environ["DISTILL_HF_DEVICE_MAP"] == "cpu"
+    assert os.environ["DISTILL_HF_TORCH_DTYPE"] == "float32"
+    assert os.environ["DISTILL_HF_MAX_CONTEXT"] == "1024"
+    assert os.environ["DISTILL_HF_BATCH_SIZE"] == "3"
+    assert os.environ["DISTILL_HF_PAD_TOKEN_ID"] == "0"
 
     _bind_stage_runtime_env("stage_b", cfg)
     assert os.environ["DISTILL_LLAMACPP_BASE_URL"] == "http://127.0.0.1:7002"
