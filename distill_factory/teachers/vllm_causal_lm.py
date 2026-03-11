@@ -182,6 +182,15 @@ class VLLMCausalLMTeacher(Teacher, TeacherRuntime):
         return [p[0] for p in pairs], [p[1] for p in pairs]
 
     @staticmethod
+    def _pad_values(values: list[Any], width: int, pad_value: Any) -> list[Any]:
+        if width <= 0:
+            return []
+        out = list(values[:width])
+        if len(out) < width:
+            out.extend([pad_value] * (width - len(out)))
+        return out
+
+    @staticmethod
     def _pooled_entropy(topk_logprobs_by_pos: list[list[float]]) -> float:
         if not topk_logprobs_by_pos:
             return 0.0
@@ -225,12 +234,13 @@ class VLLMCausalLMTeacher(Teacher, TeacherRuntime):
         if len(top_k_ids) != len(top_k_logprobs):
             raise RuntimeError("vLLM top-k semantics violation: id/logprob row count mismatch")
 
-        # vLLM policy: prompt_logprobs are returned for prompt token positions where
-        # token maps are available. This is typically token_length - 1 rows.
+        # vLLM policy: teacher output rows are aligned to token positions with
+        # next-token targets (token_length - 1), with zero-padding for positions
+        # where vLLM does not expose prompt logprobs.
         expected_max_positions = max(int(token_length) - 1, 0)
-        if len(top_k_ids) > expected_max_positions:
+        if len(top_k_ids) != expected_max_positions:
             raise RuntimeError(
-                f"vLLM top-k semantics violation: expected <= {expected_max_positions} rows, got {len(top_k_ids)}"
+                f"vLLM top-k semantics violation: expected {expected_max_positions} rows, got {len(top_k_ids)}"
             )
 
         vocab_size = self._tokenizer_vocab_size()
@@ -312,13 +322,23 @@ class VLLMCausalLMTeacher(Teacher, TeacherRuntime):
             for idx, item in enumerate(generated):
                 per_pos_ids: list[list[int]] = []
                 per_pos_lps: list[list[float]] = []
-                for token_map in item.prompt_logprobs or []:
-                    ids, lps = self._extract_token_logprobs(token_map)
-                    if ids:
-                        per_pos_ids.append(ids[:top_k])
-                        per_pos_lps.append(lps[:top_k])
-
                 token_length = int(prompt_token_lengths[idx]) if idx < len(prompt_token_lengths) else 0
+                expected_positions = max(token_length - 1, 0)
+                prompt_rows = list(item.prompt_logprobs or [])
+                # vLLM commonly returns one entry per prompt token where the first row
+                # has no context target (often None). Drop it when lengths match.
+                if len(prompt_rows) == token_length:
+                    prompt_rows = prompt_rows[1:]
+                prompt_rows = prompt_rows[:expected_positions]
+                if len(prompt_rows) < expected_positions:
+                    prompt_rows.extend([None] * (expected_positions - len(prompt_rows)))
+
+                for token_map in prompt_rows:
+                    ids, lps = self._extract_token_logprobs(token_map)
+                    per_pos_ids.append(self._pad_values(ids, top_k, 0))
+                    lps_pad = float(lps[-1]) if lps else 0.0
+                    per_pos_lps.append(self._pad_values(lps, top_k, lps_pad))
+
                 emit_per_token_entropy = self.emit_per_token_entropy or bool(batch[idx].get("emit_per_token_entropy", False))
                 emit_per_token_top1_gap = self.emit_per_token_top1_gap or bool(batch[idx].get("emit_per_token_top1_gap", False))
                 entropy_value = self._pooled_entropy(per_pos_lps)
