@@ -59,7 +59,7 @@ def test_hf_validation_helper_rejects_bad_semantics() -> None:
             token_length=2,
         )
 
-    with pytest.raises(RuntimeError, match="token id out of tokenizer vocab range"):
+    with pytest.raises(RuntimeError, match="token id out of model/logit vocab range"):
         teacher._validate_topk_semantics(
             top_k_ids=[[10, 1]],
             top_k_logprobs=[[-0.1, -0.2]],
@@ -74,6 +74,22 @@ def test_hf_validation_helper_rejects_bad_semantics() -> None:
             entropy=0.3,
             token_length=2,
         )
+
+
+
+
+def test_hf_validation_helper_uses_logit_vocab_bound_when_provided() -> None:
+    teacher = HFCausalLMTeacher(model_name_or_path="dummy", max_context=16, batch_size=1)
+    # tokenizer vocab may be smaller than model logits vocab for some setups
+    teacher._tokenizer = _TokenizerStub(vocab_size=8)
+
+    teacher._validate_topk_semantics(
+        top_k_ids=[[9, 1]],
+        top_k_logprobs=[[-0.1, -0.2]],
+        entropy=0.3,
+        token_length=2,
+        vocab_upper_bound=16,
+    )
 
 
 def test_vllm_validation_helper_accepts_valid_semantics() -> None:

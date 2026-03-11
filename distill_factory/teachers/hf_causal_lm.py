@@ -197,6 +197,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         top_k_logprobs: list[list[float]],
         entropy: float,
         token_length: int,
+        vocab_upper_bound: int | None = None,
     ) -> None:
         # HF policy: we emit next-token distributions for each observed prompt token,
         # so expected top-k rows are `max(token_length - 1, 0)`.
@@ -208,14 +209,20 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
                 f"HF top-k semantics violation: expected {expected_positions} rows, got {len(top_k_ids)}"
             )
 
-        vocab_size = self._tokenizer_vocab_size()
+        tokenizer_vocab_size = self._tokenizer_vocab_size()
+        effective_vocab_bound = vocab_upper_bound
+        if effective_vocab_bound is None:
+            effective_vocab_bound = tokenizer_vocab_size
+
         for row_ids, row_lps in zip(top_k_ids, top_k_logprobs):
             if len(row_ids) != len(row_lps):
                 raise RuntimeError("HF top-k semantics violation: id/logprob width mismatch")
             if any(not math.isfinite(float(lp)) for lp in row_lps):
                 raise RuntimeError("HF top-k semantics violation: encountered non-finite logprob")
-            if vocab_size is not None and any((tid < 0 or tid >= vocab_size) for tid in row_ids):
-                raise RuntimeError("HF top-k semantics violation: token id out of tokenizer vocab range")
+            if any(int(tid) < 0 for tid in row_ids):
+                raise RuntimeError("HF top-k semantics violation: token id must be non-negative")
+            if effective_vocab_bound is not None and any(int(tid) >= int(effective_vocab_bound) for tid in row_ids):
+                raise RuntimeError("HF top-k semantics violation: token id out of model/logit vocab range")
 
         if (not math.isfinite(float(entropy))) or float(entropy) < 0.0:
             raise RuntimeError("HF top-k semantics violation: entropy must be finite and non-negative")
@@ -329,6 +336,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
                         top_k_logprobs=top_k_logprobs,
                         entropy=entropy_value,
                         token_length=token_length,
+                        vocab_upper_bound=int(logprobs.shape[-1]),
                     )
 
                     out_item = {
