@@ -23,3 +23,10 @@ def test_config_loading(tmp_path):
 def test_example_default_toml_parses():
     cfg = load_config(Path("configs/examples/default.toml"))
     assert cfg.output.output_dir == "./data/processed"
+
+
+def test_example_llamacpp_toml_parses_and_normalizes_optional_strings():
+    cfg = load_config(Path("configs/examples/llamacpp_server_backend.toml"))
+    assert cfg.stage_a.llama_model_hint is None
+    assert cfg.stage_b.llama_model_hint is None
+    assert cfg.stage_c.llama_model_hint is None

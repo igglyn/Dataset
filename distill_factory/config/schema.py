@@ -220,6 +220,14 @@ def _require_section(data: dict[str, Any], section: str) -> dict[str, Any]:
     return section_data
 
 
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
 def _parse_teacher_mixture(section: dict[str, Any], default_teacher_name: str) -> list[TeacherMixConfig]:
     raw = section.get("teacher_mixture")
     if raw is None:
@@ -277,10 +285,9 @@ def load_config(path: str | Path) -> PipelineConfig:
     log_token_lengths = bool(output_cfg.get("log_token_lengths", False))
     log_byte_lengths = bool(output_cfg.get("log_byte_lengths", False))
 
-    stop_after_stage_raw = output_cfg.get("stop_after_stage")
-    stop_after_stage = None if stop_after_stage_raw is None else str(stop_after_stage_raw)
+    stop_after_stage = _optional_str(output_cfg.get("stop_after_stage"))
     if stop_after_stage not in {None, "stage_a", "stage_b", "stage_c"}:
-        raise ValueError("[output].stop_after_stage must be null, 'stage_a', 'stage_b', or 'stage_c'")
+        raise ValueError("[output].stop_after_stage must be empty/unset, 'stage_a', 'stage_b', or 'stage_c'")
 
     eval_split_strategy = str(data_cfg.get("eval_split_strategy", "random_docs"))
     if eval_split_strategy not in {"random_docs", "prefer_long_docs"}:
@@ -450,8 +457,8 @@ def load_config(path: str | Path) -> PipelineConfig:
     _validate_llamacpp_backend("stage_c", stage_c_cfg, stage_c_backend_type)
 
     os.environ["DISTILL_LLAMACPP_BASE_URL"] = str(stage_a_cfg.get("llama_base_url", "http://127.0.0.1:8080"))
-    model_hint = stage_a_cfg.get("llama_model_hint")
-    os.environ["DISTILL_LLAMACPP_MODEL_HINT"] = "" if model_hint is None else str(model_hint)
+    model_hint = _optional_str(stage_a_cfg.get("llama_model_hint"))
+    os.environ["DISTILL_LLAMACPP_MODEL_HINT"] = "" if model_hint is None else model_hint
     os.environ["DISTILL_LLAMACPP_REQUEST_TIMEOUT"] = str(float(stage_a_cfg.get("llama_request_timeout", 30.0)))
     os.environ["DISTILL_LLAMACPP_MAX_CONTEXT"] = str(int(stage_a_cfg.get("max_context", 2048)))
     os.environ["DISTILL_LLAMACPP_TOP_K"] = str(int(stage_a_cfg.get("top_k", 5)))
@@ -489,7 +496,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         output=OutputConfig(
             output_dir=str(output_cfg["output_dir"]),
             format=output_format,
-            compression=None if output_cfg["compression"] is None else str(output_cfg["compression"]),
+            compression=_optional_str(output_cfg.get("compression")),
             max_records_per_shard=int(output_cfg.get("max_records_per_shard", 0)),
             shard_prefix=str(output_cfg.get("shard_prefix", "shard")),
             resume=bool(output_cfg.get("resume", False)),
@@ -517,7 +524,7 @@ def load_config(path: str | Path) -> PipelineConfig:
             gpu_memory_utilization=float(stage_a_cfg.get("gpu_memory_utilization", 0.9)),
             trust_remote_code=bool(stage_a_cfg.get("trust_remote_code", False)),
             llama_base_url=str(stage_a_cfg.get("llama_base_url", "http://127.0.0.1:8080")),
-            llama_model_hint=None if stage_a_cfg.get("llama_model_hint") is None else str(stage_a_cfg.get("llama_model_hint")),
+            llama_model_hint=_optional_str(stage_a_cfg.get("llama_model_hint")),
             llama_request_timeout=float(stage_a_cfg.get("llama_request_timeout", 30.0)),
             extract_hidden_summary=bool(stage_a_cfg.get("extract_hidden_summary", False)),
             enable_position_filtering=stage_a_enable_position_filtering,
@@ -541,7 +548,7 @@ def load_config(path: str | Path) -> PipelineConfig:
             max_teacher_context=int(stage_b_cfg.get("max_teacher_context", stage_b_cfg.get("context_window", 2048))),
             target_region_policy=stage_b_target_region_policy,
             llama_base_url=str(stage_b_cfg.get("llama_base_url", "http://127.0.0.1:8080")),
-            llama_model_hint=None if stage_b_cfg.get("llama_model_hint") is None else str(stage_b_cfg.get("llama_model_hint")),
+            llama_model_hint=_optional_str(stage_b_cfg.get("llama_model_hint")),
             llama_request_timeout=float(stage_b_cfg.get("llama_request_timeout", 30.0)),
             extract_hidden_summary=bool(stage_b_cfg.get("extract_hidden_summary", False)),
             enable_position_filtering=stage_b_enable_position_filtering,
@@ -564,7 +571,7 @@ def load_config(path: str | Path) -> PipelineConfig:
             template_kwargs=dict(stage_c_template_kwargs),
             deterministic=bool(stage_c_cfg.get("deterministic", True)),
             llama_base_url=str(stage_c_cfg.get("llama_base_url", "http://127.0.0.1:8080")),
-            llama_model_hint=None if stage_c_cfg.get("llama_model_hint") is None else str(stage_c_cfg.get("llama_model_hint")),
+            llama_model_hint=_optional_str(stage_c_cfg.get("llama_model_hint")),
             llama_request_timeout=float(stage_c_cfg.get("llama_request_timeout", 30.0)),
             extract_hidden_summary=bool(stage_c_cfg.get("extract_hidden_summary", False)),
             teacher_mixture=_parse_teacher_mixture(stage_c_cfg, default_teacher_name=stage_c_teacher_name),
