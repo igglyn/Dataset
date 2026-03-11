@@ -18,6 +18,7 @@ def test_config_loading(tmp_path):
     assert cfg.stage_a.mode == "topk_logits"
     assert cfg.stage_b.mode == "long_context"
     assert cfg.stage_c.mode == "structured_outputs"
+    assert cfg.stage_a.hf_pad_token_id is None
 
 
 def test_example_default_toml_parses():
@@ -30,3 +31,8 @@ def test_example_llamacpp_toml_parses_and_normalizes_optional_strings():
     assert cfg.stage_a.llama_model_hint is None
     assert cfg.stage_b.llama_model_hint is None
     assert cfg.stage_c.llama_model_hint is None
+
+
+def test_hf_backend_config_parses_hf_pad_token_id() -> None:
+    cfg = load_config(Path("configs/examples/hf_backend.toml"))
+    assert cfg.stage_a.hf_pad_token_id == 0

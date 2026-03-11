@@ -54,6 +54,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         extract_hidden_summary: bool = False,
         emit_per_token_entropy: bool = False,
         emit_per_token_top1_gap: bool = False,
+        hf_pad_token_id: int | None = None,
     ) -> None:
         self.model_name_or_path = model_name_or_path
         self.device_map = device_map
@@ -63,6 +64,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         self.extract_hidden_summary = bool(extract_hidden_summary)
         self.emit_per_token_entropy = bool(emit_per_token_entropy)
         self.emit_per_token_top1_gap = bool(emit_per_token_top1_gap)
+        self.hf_pad_token_id = None if hf_pad_token_id is None else int(hf_pad_token_id)
 
         self._tokenizer = None
         self._model = None
@@ -123,11 +125,17 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
 
         dtype = _DTYPE_MAP.get(self.torch_dtype, torch.float32)
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path)
+        if self.hf_pad_token_id is not None:
+            self._tokenizer.pad_token_id = int(self.hf_pad_token_id)
+
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_name_or_path,
             torch_dtype=dtype,
             device_map=self.device_map,
         )
+        if self.hf_pad_token_id is not None and hasattr(self._model, "config"):
+            self._model.config.pad_token_id = int(self.hf_pad_token_id)
+
         self._model.eval()
 
 
@@ -189,6 +197,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         top_k_logprobs: list[list[float]],
         entropy: float,
         token_length: int,
+        vocab_upper_bound: int | None = None,
     ) -> None:
         # HF policy: we emit next-token distributions for each observed prompt token,
         # so expected top-k rows are `max(token_length - 1, 0)`.
@@ -200,14 +209,20 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
                 f"HF top-k semantics violation: expected {expected_positions} rows, got {len(top_k_ids)}"
             )
 
-        vocab_size = self._tokenizer_vocab_size()
+        tokenizer_vocab_size = self._tokenizer_vocab_size()
+        effective_vocab_bound = vocab_upper_bound
+        if effective_vocab_bound is None:
+            effective_vocab_bound = tokenizer_vocab_size
+
         for row_ids, row_lps in zip(top_k_ids, top_k_logprobs):
             if len(row_ids) != len(row_lps):
                 raise RuntimeError("HF top-k semantics violation: id/logprob width mismatch")
             if any(not math.isfinite(float(lp)) for lp in row_lps):
                 raise RuntimeError("HF top-k semantics violation: encountered non-finite logprob")
-            if vocab_size is not None and any((tid < 0 or tid >= vocab_size) for tid in row_ids):
-                raise RuntimeError("HF top-k semantics violation: token id out of tokenizer vocab range")
+            if any(int(tid) < 0 for tid in row_ids):
+                raise RuntimeError("HF top-k semantics violation: token id must be non-negative")
+            if effective_vocab_bound is not None and any(int(tid) >= int(effective_vocab_bound) for tid in row_ids):
+                raise RuntimeError("HF top-k semantics violation: token id out of model/logit vocab range")
 
         if (not math.isfinite(float(entropy))) or float(entropy) < 0.0:
             raise RuntimeError("HF top-k semantics violation: entropy must be finite and non-negative")
@@ -219,6 +234,8 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
             raise ModuleNotFoundError("transformers is required for HFCausalLMTeacher tokenizer diagnostics.")
         if self._tokenizer is None:
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path)
+            if self.hf_pad_token_id is not None:
+                self._tokenizer.pad_token_id = int(self.hf_pad_token_id)
 
     def token_lengths(self, texts: list[str]) -> list[int]:
         """Return token counts for input texts without running teacher inference."""
@@ -262,6 +279,12 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
                     truncation=True,
                     max_length=self.max_context,
                 )
+
+                # Backend-facing padding convention: padding token ids are not
+                # surfaced externally, so force padded positions to token id 0.
+                # We retain attention_mask for true sequence lengths.
+                if "input_ids" in tokenized and "attention_mask" in tokenized:
+                    tokenized["input_ids"] = tokenized["input_ids"] * tokenized["attention_mask"].to(tokenized["input_ids"].dtype)
 
                 if hasattr(self._model, "device"):
                     device = self._model.device
@@ -313,6 +336,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
                         top_k_logprobs=top_k_logprobs,
                         entropy=entropy_value,
                         token_length=token_length,
+                        vocab_upper_bound=int(logprobs.shape[-1]),
                     )
 
                     out_item = {
