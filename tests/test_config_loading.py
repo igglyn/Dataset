@@ -19,6 +19,7 @@ def test_config_loading(tmp_path):
     assert cfg.stage_b.mode == "long_context"
     assert cfg.stage_c.mode == "structured_outputs"
     assert cfg.stage_a.hf_pad_token_id is None
+    assert cfg.stage_a.hf_offload_layers is None
 
 
 def test_example_default_toml_parses():
@@ -36,3 +37,4 @@ def test_example_llamacpp_toml_parses_and_normalizes_optional_strings():
 def test_hf_backend_config_parses_hf_pad_token_id() -> None:
     cfg = load_config(Path("configs/examples/hf_backend.toml"))
     assert cfg.stage_a.hf_pad_token_id == 0
+    assert cfg.stage_a.hf_offload_layers == 0

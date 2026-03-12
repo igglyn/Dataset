@@ -25,6 +25,8 @@ top_k = 32
 temperature = 1.0
 model_name_or_path = "distilgpt2"
 device_map = "auto"
+# Optional: force last N transformer blocks to CPU when using HF backend
+hf_offload_layers = 0
 torch_dtype = "float16"
 max_context = 2048
 batch_size = 1
