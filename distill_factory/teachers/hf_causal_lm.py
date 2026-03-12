@@ -194,15 +194,15 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
             "opt": "model.decoder.layers",
         }.get(str(getattr(config, "model_type", "")).lower(), "model.layers")
 
-        # Conservative mapping for load-time stability:
-        # - default all modules to CPU
-        # - move only the first (total_layers - offload_layers) transformer blocks
-        #   to the accelerator
-        # This keeps non-layer modules (embeddings/lm_head/norms) on CPU to reduce
-        # initialization-time GPU OOM risk.
-        device_map: dict[str, str] = {"": "cpu"}
-        for layer_idx in range(0, total_layers - offload_layers):
-            device_map[f"{layer_prefix}.{layer_idx}"] = target_device
+        # Default all modules to the accelerator then place only trailing
+        # transformer blocks on CPU.
+        #
+        # Keeping embeddings/lm_head with the main execution device avoids
+        # tied-weight placement edge-cases that can leave tensors on `meta`
+        # during dispatch with some model architectures.
+        device_map: dict[str, str] = {"": target_device}
+        for layer_idx in range(total_layers - offload_layers, total_layers):
+            device_map[f"{layer_prefix}.{layer_idx}"] = "cpu"
         return device_map
 
 

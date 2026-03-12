@@ -30,11 +30,9 @@ def test_resolve_device_map_offloads_trailing_layers(monkeypatch) -> None:
 
     resolved = teacher._resolve_device_map()
     assert isinstance(resolved, dict)
-    assert resolved[""] == "cpu"
-    assert resolved["model.layers.0"] == "cuda:0"
-    assert resolved["model.layers.1"] == "cuda:0"
-    assert resolved["model.layers.2"] == "cuda:0"
-    assert resolved["model.layers.3"] == "cuda:0"
+    assert resolved[""] == "cuda:0"
+    assert resolved["model.layers.4"] == "cpu"
+    assert resolved["model.layers.5"] == "cpu"
 
 
 def test_resolve_device_map_all_layers_offloaded_means_cpu(monkeypatch) -> None:
