@@ -674,3 +674,11 @@ def _bind_stage_runtime_env(stage_name: str, cfg: Any) -> None:
     os.environ["DISTILL_HF_PAD_TOKEN_ID"] = "" if hf_pad_token_id is None else str(int(hf_pad_token_id))
     hf_offload_layers = getattr(stage_cfg, "hf_offload_layers", None)
     os.environ["DISTILL_HF_OFFLOAD_LAYERS"] = "" if hf_offload_layers is None else str(int(hf_offload_layers))
+
+    os.environ["DISTILL_VLLM_MODEL_NAME_OR_PATH"] = str(getattr(stage_cfg, "model_name_or_path", "Qwen/Qwen2.5-0.5B"))
+    os.environ["DISTILL_VLLM_TENSOR_PARALLEL_SIZE"] = str(int(getattr(stage_cfg, "tensor_parallel_size", 1)))
+    os.environ["DISTILL_VLLM_DTYPE"] = str(getattr(stage_cfg, "dtype", "auto"))
+    os.environ["DISTILL_VLLM_MAX_CONTEXT"] = str(int(getattr(stage_cfg, "max_context", 2048)))
+    os.environ["DISTILL_VLLM_BATCH_SIZE"] = str(int(getattr(stage_cfg, "batch_size", 1)))
+    os.environ["DISTILL_VLLM_GPU_MEMORY_UTILIZATION"] = str(float(getattr(stage_cfg, "gpu_memory_utilization", 0.9)))
+    os.environ["DISTILL_VLLM_TRUST_REMOTE_CODE"] = "true" if bool(getattr(stage_cfg, "trust_remote_code", False)) else "false"

@@ -54,6 +54,7 @@ top_k = 9
 temperature = 0.2
 context_window = 2048
 stride = 512
+batch_size = 5
 llama_base_url = "http://127.0.0.1:7002"
 llama_model_hint = "stage-b"
 llama_request_timeout = 22.0
@@ -65,6 +66,7 @@ backend_type = "llamacpp_server"
 mode = "topk_logits"
 top_k = 11
 temperature = 0.3
+batch_size = 7
 llama_base_url = "http://127.0.0.1:7003"
 llama_model_hint = "stage-c"
 llama_request_timeout = 33.0
@@ -88,6 +90,13 @@ llama_request_timeout = 33.0
     assert os.environ["DISTILL_HF_BATCH_SIZE"] == "3"
     assert os.environ["DISTILL_HF_PAD_TOKEN_ID"] == "0"
     assert os.environ["DISTILL_HF_OFFLOAD_LAYERS"] == "2"
+    assert os.environ["DISTILL_VLLM_MODEL_NAME_OR_PATH"] == "distilgpt2"
+    assert os.environ["DISTILL_VLLM_TENSOR_PARALLEL_SIZE"] == "1"
+    assert os.environ["DISTILL_VLLM_DTYPE"] == "auto"
+    assert os.environ["DISTILL_VLLM_MAX_CONTEXT"] == "1024"
+    assert os.environ["DISTILL_VLLM_BATCH_SIZE"] == "3"
+    assert os.environ["DISTILL_VLLM_GPU_MEMORY_UTILIZATION"] == "0.9"
+    assert os.environ["DISTILL_VLLM_TRUST_REMOTE_CODE"] == "false"
 
     _bind_stage_runtime_env("stage_b", cfg)
     assert os.environ["DISTILL_LLAMACPP_BASE_URL"] == "http://127.0.0.1:7002"
@@ -95,6 +104,8 @@ llama_request_timeout = 33.0
     assert os.environ["DISTILL_LLAMACPP_REQUEST_TIMEOUT"] == "22.0"
     assert os.environ["DISTILL_LLAMACPP_TOP_K"] == "9"
     assert os.environ["DISTILL_LLAMACPP_TEMPERATURE"] == "0.2"
+    assert os.environ["DISTILL_HF_BATCH_SIZE"] == "5"
+    assert os.environ["DISTILL_VLLM_BATCH_SIZE"] == "5"
 
     _bind_stage_runtime_env("stage_c", cfg)
     assert os.environ["DISTILL_LLAMACPP_BASE_URL"] == "http://127.0.0.1:7003"
@@ -102,3 +113,5 @@ llama_request_timeout = 33.0
     assert os.environ["DISTILL_LLAMACPP_REQUEST_TIMEOUT"] == "33.0"
     assert os.environ["DISTILL_LLAMACPP_TOP_K"] == "11"
     assert os.environ["DISTILL_LLAMACPP_TEMPERATURE"] == "0.3"
+    assert os.environ["DISTILL_HF_BATCH_SIZE"] == "7"
+    assert os.environ["DISTILL_VLLM_BATCH_SIZE"] == "7"

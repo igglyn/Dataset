@@ -56,6 +56,11 @@ def _print_preflight_checklist(config_path: str) -> None:
         "stage_c": [m.teacher_name for m in cfg.stage_c.teacher_mixture] if cfg.stage_c.enabled else [],
     }
     longdoc_enabled = float(cfg.data.eval_longdoc_fraction) > 0.0
+    stage_batch_sizes = {
+        "stage_a": int(cfg.stage_a.batch_size),
+        "stage_b": int(cfg.stage_b.batch_size),
+        "stage_c": int(cfg.stage_c.batch_size),
+    }
 
     print("Preflight checklist")
     print(f"  config_path: {config_path}")
@@ -70,6 +75,7 @@ def _print_preflight_checklist(config_path: str) -> None:
     )
     print(f"  dry_run: {cfg.output.dry_run}")
     print(f"  stop_after_stage: {cfg.output.stop_after_stage}")
+    print(f"  stage_batch_sizes: {stage_batch_sizes}")
     print(f"  longdoc_eval_enabled: {longdoc_enabled} (eval_longdoc_fraction={cfg.data.eval_longdoc_fraction})")
 
 def _apply_longdoc_eval_split_if_needed(config_path: str, summary: dict[str, object]) -> dict[str, object]:
@@ -184,6 +190,11 @@ def main() -> None:
     cfg = load_config(args.config)
     if not bool(cfg.output.dry_run):
         _print_preflight_checklist(args.config)
+
+    print(
+        "Training batch sizes: "
+        f"stage_a={cfg.stage_a.batch_size} stage_b={cfg.stage_b.batch_size} stage_c={cfg.stage_c.batch_size}"
+    )
 
     summary = run_pipeline(args.config)
     summary = _apply_longdoc_eval_split_if_needed(args.config, summary)
