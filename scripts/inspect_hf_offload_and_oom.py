@@ -11,7 +11,12 @@ import argparse
 import json
 import time
 from pathlib import Path
+import sys
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from distill_factory.config.schema import load_config
 from distill_factory.teachers.hf_causal_lm import HFCausalLMTeacher
