@@ -672,3 +672,5 @@ def _bind_stage_runtime_env(stage_name: str, cfg: Any) -> None:
 
     hf_pad_token_id = getattr(stage_cfg, "hf_pad_token_id", None)
     os.environ["DISTILL_HF_PAD_TOKEN_ID"] = "" if hf_pad_token_id is None else str(int(hf_pad_token_id))
+    hf_offload_layers = getattr(stage_cfg, "hf_offload_layers", None)
+    os.environ["DISTILL_HF_OFFLOAD_LAYERS"] = "" if hf_offload_layers is None else str(int(hf_offload_layers))

@@ -26,8 +26,9 @@ from .runtime_base import RuntimeCapabilities, TeacherRuntime
 from .long_context import prepare_long_context_teacher_input
 
 try:
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 except ModuleNotFoundError:  # pragma: no cover
+    AutoConfig = None
     AutoModelForCausalLM = None
     AutoTokenizer = None
 
@@ -45,7 +46,7 @@ if torch is not None:
 class HFCausalLMTeacher(Teacher, TeacherRuntime):
     """Minimal HF causal LM backend for teacher signal extraction."""
 
-    _RESOURCE_CACHE: dict[tuple[str, str, str, int | None], tuple[Any, Any]] = {}
+    _RESOURCE_CACHE: dict[tuple[str, str, str, int | None, int | None], tuple[Any, Any]] = {}
     _LOGGER = logging.getLogger(__name__)
 
     def __init__(
@@ -59,6 +60,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         emit_per_token_entropy: bool = False,
         emit_per_token_top1_gap: bool = False,
         hf_pad_token_id: int | None = None,
+        hf_offload_layers: int | None = None,
     ) -> None:
         self.model_name_or_path = model_name_or_path
         self.device_map = device_map
@@ -69,6 +71,9 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         self.emit_per_token_entropy = bool(emit_per_token_entropy)
         self.emit_per_token_top1_gap = bool(emit_per_token_top1_gap)
         self.hf_pad_token_id = None if hf_pad_token_id is None else int(hf_pad_token_id)
+        self.hf_offload_layers = None if hf_offload_layers is None else int(hf_offload_layers)
+        if self.hf_offload_layers is not None and self.hf_offload_layers < 0:
+            raise ValueError("hf_offload_layers must be >= 0 when set")
 
         self._tokenizer = None
         self._model = None
@@ -130,7 +135,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         if self._tokenizer is not None and self._model is not None:
             return
 
-        cache_key = (self.model_name_or_path, self.device_map, self.torch_dtype, self.hf_pad_token_id)
+        cache_key = (self.model_name_or_path, self.device_map, self.torch_dtype, self.hf_pad_token_id, self.hf_offload_layers)
         cached = self._RESOURCE_CACHE.get(cache_key)
         if cached is not None:
             self._tokenizer, self._model = cached
@@ -144,7 +149,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         model = AutoModelForCausalLM.from_pretrained(
             self.model_name_or_path,
             torch_dtype=dtype,
-            device_map=self.device_map,
+            device_map=self._resolve_device_map(),
         )
         if self.hf_pad_token_id is not None and hasattr(model, "config"):
             model.config.pad_token_id = int(self.hf_pad_token_id)
@@ -152,6 +157,42 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         model.eval()
         self._RESOURCE_CACHE[cache_key] = (tokenizer, model)
         self._tokenizer, self._model = tokenizer, model
+
+    def _resolve_device_map(self) -> str | dict[str, str]:
+        if self.hf_offload_layers is None or int(self.hf_offload_layers) <= 0:
+            return self.device_map
+        if torch is None or AutoConfig is None:
+            return self.device_map
+
+        target_device = "cpu"
+        if bool(getattr(torch.cuda, "is_available", lambda: False)()):
+            target_device = "cuda:0"
+        elif bool(getattr(getattr(torch, "backends", object()), "mps", object()).is_available()):
+            target_device = "mps"
+        if target_device == "cpu":
+            return "cpu"
+
+        config = AutoConfig.from_pretrained(self.model_name_or_path)
+        total_layers = int(getattr(config, "num_hidden_layers", 0))
+        if total_layers <= 0:
+            self._LOGGER.warning(
+                "hf_offload_layers was set, but model config has no num_hidden_layers; falling back to device_map=%s",
+                self.device_map,
+            )
+            return self.device_map
+
+        offload_layers = min(int(self.hf_offload_layers), total_layers)
+        layer_prefix = {
+            "gpt2": "transformer.h",
+            "gpt_bigcode": "transformer.h",
+            "gpt_neox": "gpt_neox.layers",
+            "opt": "model.decoder.layers",
+        }.get(str(getattr(config, "model_type", "")).lower(), "model.layers")
+
+        device_map: dict[str, str] = {"": target_device}
+        for layer_idx in range(total_layers - offload_layers, total_layers):
+            device_map[f"{layer_prefix}.{layer_idx}"] = "cpu"
+        return device_map
 
 
     def _prepare_stage_b_record(self, record: dict[str, Any]) -> dict[str, Any]:
