@@ -204,7 +204,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
             device_map[f"{layer_prefix}.{layer_idx}"] = target_device
 
         # Keep tied/shared weights on the accelerator together with active layers.
-        # This avoids `meta`-device dispatch errors for common decoder-only families.
+        # This avoids `meta`-device dispatch errors from tied embeddings/lm_head.
         shared_module_prefixes = {
             "gpt2": ("transformer.wte", "transformer.wpe", "transformer.ln_f", "lm_head"),
             "gpt_bigcode": ("transformer.wte", "transformer.wpe", "transformer.ln_f", "lm_head"),
@@ -215,8 +215,33 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
             "mixtral": ("model.embed_tokens", "model.norm", "lm_head"),
             "qwen2": ("model.embed_tokens", "model.norm", "lm_head"),
             "gemma": ("model.embed_tokens", "model.norm", "lm_head"),
+            "falcon": ("transformer.word_embeddings", "transformer.ln_f", "lm_head"),
+            "bloom": ("transformer.word_embeddings", "transformer.word_embeddings_layernorm", "transformer.ln_f", "lm_head"),
+            "phi": ("model.embed_tokens", "model.final_layernorm", "lm_head"),
+            "phi3": ("model.embed_tokens", "model.norm", "lm_head"),
         }
-        for module_name in shared_module_prefixes.get(model_type, ("model.embed_tokens", "model.norm", "lm_head")):
+        # Heuristic fallbacks cover additional decoder-only families where naming
+        # differs but tied embeddings/lm_head still need colocation.
+        fallback_shared_modules = (
+            "lm_head",
+            "output",
+            "model.embed_tokens",
+            "model.norm",
+            "model.final_layernorm",
+            "model.tok_embeddings",
+            "transformer.wte",
+            "transformer.wpe",
+            "transformer.ln_f",
+            "transformer.word_embeddings",
+            "transformer.word_embeddings_layernorm",
+            "gpt_neox.embed_in",
+            "gpt_neox.final_layer_norm",
+            "embed_out",
+            "model.decoder.embed_tokens",
+            "model.decoder.embed_positions",
+            "model.decoder.final_layer_norm",
+        )
+        for module_name in set(shared_module_prefixes.get(model_type, ())) | set(fallback_shared_modules):
             device_map[module_name] = target_device
 
         return device_map
