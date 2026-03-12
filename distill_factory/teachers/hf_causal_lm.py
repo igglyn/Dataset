@@ -187,22 +187,38 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
             # for offload. This avoids default-root GPU placement spikes at load time.
             return "cpu"
 
+        model_type = str(getattr(config, "model_type", "")).lower()
         layer_prefix = {
             "gpt2": "transformer.h",
             "gpt_bigcode": "transformer.h",
             "gpt_neox": "gpt_neox.layers",
             "opt": "model.decoder.layers",
-        }.get(str(getattr(config, "model_type", "")).lower(), "model.layers")
+        }.get(model_type, "model.layers")
 
-        # Default all modules to the accelerator then place only trailing
-        # transformer blocks on CPU.
-        #
-        # Keeping embeddings/lm_head with the main execution device avoids
-        # tied-weight placement edge-cases that can leave tensors on `meta`
-        # during dispatch with some model architectures.
-        device_map: dict[str, str] = {"": target_device}
-        for layer_idx in range(total_layers - offload_layers, total_layers):
-            device_map[f"{layer_prefix}.{layer_idx}"] = "cpu"
+        # Keep root on CPU so unmatched modules default to CPU and we avoid
+        # load-time GPU OOM spikes.
+        device_map: dict[str, str] = {"": "cpu"}
+
+        # Place non-offloaded transformer blocks on the accelerator.
+        for layer_idx in range(0, total_layers - offload_layers):
+            device_map[f"{layer_prefix}.{layer_idx}"] = target_device
+
+        # Keep tied/shared weights on the accelerator together with active layers.
+        # This avoids `meta`-device dispatch errors for common decoder-only families.
+        shared_module_prefixes = {
+            "gpt2": ("transformer.wte", "transformer.wpe", "transformer.ln_f", "lm_head"),
+            "gpt_bigcode": ("transformer.wte", "transformer.wpe", "transformer.ln_f", "lm_head"),
+            "gpt_neox": ("gpt_neox.embed_in", "gpt_neox.final_layer_norm", "embed_out"),
+            "opt": ("model.decoder.embed_tokens", "model.decoder.embed_positions", "model.decoder.final_layer_norm", "lm_head"),
+            "llama": ("model.embed_tokens", "model.norm", "lm_head"),
+            "mistral": ("model.embed_tokens", "model.norm", "lm_head"),
+            "mixtral": ("model.embed_tokens", "model.norm", "lm_head"),
+            "qwen2": ("model.embed_tokens", "model.norm", "lm_head"),
+            "gemma": ("model.embed_tokens", "model.norm", "lm_head"),
+        }
+        for module_name in shared_module_prefixes.get(model_type, ("model.embed_tokens", "model.norm", "lm_head")):
+            device_map[module_name] = target_device
+
         return device_map
 
 
