@@ -30,7 +30,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--torch-dtype", default="float16", help="HF torch dtype (ignored when --config is set)")
     p.add_argument("--max-context", type=int, default=1024, help="Max context (ignored when --config is set)")
     p.add_argument("--hf-offload-layers", type=int, default=None, help="Optional number of trailing layers to offload to CPU")
-    p.add_argument("--samples", type=int, default=4, help="Rows to run per batch-size probe")
+    p.add_argument("--samples", type=int, default=4, help="Minimum rows to run per probe; effective batch is max(batch_size, samples)")
     p.add_argument("--seq-len", type=int, default=128, help="Approx tokenizable prompt length")
     p.add_argument("--batch-sizes", nargs="+", type=int, default=[1, 2, 4], help="Batch sizes to probe")
     return p.parse_args()
@@ -86,11 +86,12 @@ def main() -> None:
 
         base_prompt = "x " * max(16, int(args.seq_len))
         for batch_size in [max(1, int(b)) for b in args.batch_sizes]:
-            records = [{"raw_bytes": base_prompt.encode("utf-8"), "top_k": 4} for _ in range(batch_size)]
-            row: dict[str, Any] = {"batch_size": batch_size}
+            effective_batch = max(batch_size, int(args.samples))
+            records = [{"raw_bytes": base_prompt.encode("utf-8"), "top_k": 4} for _ in range(effective_batch)]
+            row: dict[str, Any] = {"batch_size": batch_size, "effective_batch_size": effective_batch}
             started = time.perf_counter()
             try:
-                outs = teacher.infer_topk(records[: int(args.samples)])
+                outs = teacher.infer_topk(records)
                 row["ok"] = True
                 row["elapsed_s"] = round(time.perf_counter() - started, 4)
                 row["outputs"] = len(outs)

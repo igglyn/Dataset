@@ -182,6 +182,11 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
             return self.device_map
 
         offload_layers = min(int(self.hf_offload_layers), total_layers)
+        if offload_layers >= total_layers:
+            # Explicitly keep the full model on CPU when all layers are requested
+            # for offload. This avoids default-root GPU placement spikes at load time.
+            return "cpu"
+
         layer_prefix = {
             "gpt2": "transformer.h",
             "gpt_bigcode": "transformer.h",
@@ -189,9 +194,15 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
             "opt": "model.decoder.layers",
         }.get(str(getattr(config, "model_type", "")).lower(), "model.layers")
 
-        device_map: dict[str, str] = {"": target_device}
-        for layer_idx in range(total_layers - offload_layers, total_layers):
-            device_map[f"{layer_prefix}.{layer_idx}"] = "cpu"
+        # Conservative mapping for load-time stability:
+        # - default all modules to CPU
+        # - move only the first (total_layers - offload_layers) transformer blocks
+        #   to the accelerator
+        # This keeps non-layer modules (embeddings/lm_head/norms) on CPU to reduce
+        # initialization-time GPU OOM risk.
+        device_map: dict[str, str] = {"": "cpu"}
+        for layer_idx in range(0, total_layers - offload_layers):
+            device_map[f"{layer_prefix}.{layer_idx}"] = target_device
         return device_map
 
 
