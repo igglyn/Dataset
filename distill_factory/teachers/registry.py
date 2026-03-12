@@ -208,6 +208,7 @@ def _build_hf_causal_lm_teacher() -> Teacher:
     - DISTILL_HF_MAX_CONTEXT
     - DISTILL_HF_BATCH_SIZE
     - DISTILL_HF_PAD_TOKEN_ID (optional int)
+    - DISTILL_HF_OFFLOAD_LAYERS (optional int)
     """
     return HFCausalLMTeacher(
         model_name_or_path=os.getenv("DISTILL_HF_MODEL_NAME_OR_PATH", "distilgpt2"),
@@ -219,6 +220,11 @@ def _build_hf_causal_lm_teacher() -> Teacher:
             None
             if os.getenv("DISTILL_HF_PAD_TOKEN_ID", "").strip() == ""
             else int(os.getenv("DISTILL_HF_PAD_TOKEN_ID", "0"))
+        ),
+        hf_offload_layers=(
+            None
+            if os.getenv("DISTILL_HF_OFFLOAD_LAYERS", "").strip() == ""
+            else int(os.getenv("DISTILL_HF_OFFLOAD_LAYERS", "0"))
         ),
     )
 

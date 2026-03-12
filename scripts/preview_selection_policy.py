@@ -58,6 +58,7 @@ def _build_stage_a_teacher(cfg):
         return HFCausalLMTeacher(
             model_name_or_path=cfg.stage_a.model_name_or_path,
             device_map=cfg.stage_a.device_map,
+            hf_offload_layers=cfg.stage_a.hf_offload_layers,
             torch_dtype=cfg.stage_a.torch_dtype,
             max_context=cfg.stage_a.max_context,
             batch_size=cfg.stage_a.batch_size,
