@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 from time import perf_counter
 from random import Random
@@ -27,6 +28,9 @@ from distill_factory.storage.writer import write_jsonl, write_parquet
 from distill_factory.teachers.registry import get_teacher
 from distill_factory.utils.hashing import deduplicate_records
 from distill_factory.utils.logging import append_record_failure
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 _STAGE_ORDER = ("stage_a", "stage_b", "stage_c")
@@ -111,7 +115,7 @@ def _apply_stage_mixture(
         stage_in = _clone_records(records)
 
         stage_out: list[dict[str, Any]] = []
-        for record in stage_in:
+        for record_idx, record in enumerate(stage_in, start=1):
             stage_attempted += 1
             try:
                 single = [record]
@@ -148,14 +152,37 @@ def _apply_stage_mixture(
                 stage_failed += 1
                 if skip_stats is not None:
                     skip_stats["skipped_records"] = int(skip_stats.get("skipped_records", 0)) + 1
+
+                doc_id = str(record.get("doc_id")) if record.get("doc_id") is not None else None
+                chunk_index = int(record.get("chunk_index")) if record.get("chunk_index") is not None else None
+
                 if failure_output_dir is not None:
-                    append_record_failure(
+                    failure_path = append_record_failure(
                         failure_output_dir,
                         stage_name=stage_name,
                         teacher_name=teacher_name,
-                        doc_id=str(record.get("doc_id")) if record.get("doc_id") is not None else None,
-                        chunk_index=int(record.get("chunk_index")) if record.get("chunk_index") is not None else None,
+                        doc_id=doc_id,
+                        chunk_index=chunk_index,
                         error_message=str(exc),
+                    )
+                    _LOGGER.warning(
+                        "%s/%s record failed (iteration=%d doc_id=%s chunk_index=%s). See error file: %s",
+                        stage_name,
+                        teacher_name,
+                        record_idx,
+                        doc_id,
+                        chunk_index,
+                        failure_path,
+                    )
+                else:
+                    _LOGGER.warning(
+                        "%s/%s record failed (iteration=%d doc_id=%s chunk_index=%s): %s",
+                        stage_name,
+                        teacher_name,
+                        record_idx,
+                        doc_id,
+                        chunk_index,
+                        exc,
                     )
 
         take = _deterministic_subsample(stage_out, target_counts[i], seed=seed + i + 1)

@@ -98,6 +98,7 @@ def _run_orchestrated_stage_a(monkeypatch, cfg: Any, teacher_output: dict[str, A
     monkeypatch.setattr(stage_a_module, "get_teacher", lambda _name: teacher)
     monkeypatch.setattr(stage_a_module, "validate_teacher_capabilities", lambda *args, **kwargs: None)
     monkeypatch.setattr(stage_a_module, "log_stage_metrics", lambda _records, stage_name: {"stage": stage_name})
+    monkeypatch.setattr(orch, "_bind_stage_runtime_env", lambda _stage_name, _cfg: None)
 
     out = orch._apply_stage_mixture(
         records=[_base_record()],
@@ -191,3 +192,54 @@ def test_orchestrated_stage_a_selected_windows_uses_threshold_config(monkeypatch
     assert captured[0]["enable_position_filtering"] is True
     assert captured[0]["selection_mode"] == "selected_windows"
     assert captured[0]["entropy_threshold"] == 0.75
+
+
+def test_orchestrator_logs_error_file_path_when_record_fails(monkeypatch, caplog, tmp_path) -> None:
+    cfg = _cfg_for_stage_a_selection(
+        enable_position_filtering=False,
+        selection_mode="selected_windows",
+        entropy_threshold=None,
+        top1_gap_threshold=None,
+        selection_window_radius=0,
+        minimum_selected_positions_per_record=None,
+    )
+
+    def _fake_run_stage_a(records, teacher_name: str, mode: str, dry_run: bool = False):
+        _ = (teacher_name, mode, dry_run)
+        rec = records[0]
+        if rec.get("doc_id") == "doc-fail":
+            raise RuntimeError("boom")
+        return [
+            {
+                **rec,
+                "top_k_ids": [[1, 2]],
+                "top_k_logprobs": [[-0.1, -0.2]],
+                "entropy": 0.3,
+            }
+        ]
+
+    monkeypatch.setattr(orch, "run_stage_a", _fake_run_stage_a)
+    monkeypatch.setattr(orch, "_bind_stage_runtime_env", lambda _stage_name, _cfg: None)
+
+    records = [
+        {**_base_record(), "doc_id": "doc-fail", "chunk_index": 0},
+        {**_base_record(), "doc_id": "doc-ok", "chunk_index": 1},
+    ]
+
+    with caplog.at_level("WARNING", logger=orch.__name__):
+        out = orch._apply_stage_mixture(
+            records=records,
+            stage_name="stage_a",
+            mode="topk_logits",
+            mixture=[SimpleNamespace(teacher_name="dummy", ratio=1.0)],
+            cfg=cfg,
+            seed=7,
+            dry_run=False,
+            failure_output_dir=tmp_path,
+            skip_stats={"skipped_records": 0},
+        )
+
+    assert len(out) == 1
+    assert any("See error file:" in rec.message for rec in caplog.records)
+    assert any("iteration=1" in rec.message for rec in caplog.records)
+    assert (tmp_path / "record_failures.jsonl").exists()
