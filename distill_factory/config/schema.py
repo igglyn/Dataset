@@ -124,6 +124,7 @@ class StageBConfig:
     window_policy: str
     max_teacher_context: int
     target_region_policy: str
+    batch_size: int
     llama_base_url: str
     llama_model_hint: str | None
     llama_request_timeout: float
@@ -149,6 +150,7 @@ class StageCConfig:
     template_name: str
     template_kwargs: dict[str, Any]
     deterministic: bool
+    batch_size: int
     llama_base_url: str
     llama_model_hint: str | None
     llama_request_timeout: float
@@ -495,6 +497,14 @@ def load_config(path: str | Path) -> PipelineConfig:
     os.environ["DISTILL_HF_PAD_TOKEN_ID"] = "" if stage_a_hf_pad_token_id is None else str(int(stage_a_hf_pad_token_id))
     os.environ["DISTILL_HF_OFFLOAD_LAYERS"] = "" if stage_a_hf_offload_layers is None else str(int(stage_a_hf_offload_layers))
 
+    os.environ["DISTILL_VLLM_MODEL_NAME_OR_PATH"] = str(stage_a_cfg.get("model_name_or_path", "Qwen/Qwen2.5-0.5B"))
+    os.environ["DISTILL_VLLM_TENSOR_PARALLEL_SIZE"] = str(int(stage_a_cfg.get("tensor_parallel_size", 1)))
+    os.environ["DISTILL_VLLM_DTYPE"] = str(stage_a_cfg.get("dtype", "auto"))
+    os.environ["DISTILL_VLLM_MAX_CONTEXT"] = str(int(stage_a_cfg.get("max_context", 2048)))
+    os.environ["DISTILL_VLLM_BATCH_SIZE"] = str(int(stage_a_cfg.get("batch_size", 1)))
+    os.environ["DISTILL_VLLM_GPU_MEMORY_UTILIZATION"] = str(float(stage_a_cfg.get("gpu_memory_utilization", 0.9)))
+    os.environ["DISTILL_VLLM_TRUST_REMOTE_CODE"] = "true" if bool(stage_a_cfg.get("trust_remote_code", False)) else "false"
+
     os.environ["DISTILL_FACTORY_LOG_TOKEN_LENGTHS"] = "1" if log_token_lengths else "0"
     os.environ["DISTILL_FACTORY_LOG_BYTE_LENGTHS"] = "1" if log_byte_lengths else "0"
 
@@ -580,6 +590,7 @@ def load_config(path: str | Path) -> PipelineConfig:
             window_policy=stage_b_window_policy,
             max_teacher_context=int(stage_b_cfg.get("max_teacher_context", stage_b_cfg.get("context_window", 2048))),
             target_region_policy=stage_b_target_region_policy,
+            batch_size=int(stage_b_cfg.get("batch_size", 1)),
             llama_base_url=str(stage_b_cfg.get("llama_base_url", "http://127.0.0.1:8080")),
             llama_model_hint=_optional_str(stage_b_cfg.get("llama_model_hint")),
             llama_request_timeout=float(stage_b_cfg.get("llama_request_timeout", 30.0)),
@@ -603,6 +614,7 @@ def load_config(path: str | Path) -> PipelineConfig:
             template_name=stage_c_template_name,
             template_kwargs=dict(stage_c_template_kwargs),
             deterministic=bool(stage_c_cfg.get("deterministic", True)),
+            batch_size=int(stage_c_cfg.get("batch_size", 1)),
             llama_base_url=str(stage_c_cfg.get("llama_base_url", "http://127.0.0.1:8080")),
             llama_model_hint=_optional_str(stage_c_cfg.get("llama_model_hint")),
             llama_request_timeout=float(stage_c_cfg.get("llama_request_timeout", 30.0)),
