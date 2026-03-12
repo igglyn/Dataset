@@ -233,6 +233,12 @@ def run_stage_a(
         finally:
             teacher.close()
 
+    if len(outputs) != len(records):
+        raise RuntimeError(
+            "Stage A teacher result count mismatch: "
+            f"expected {len(records)} outputs, got {len(outputs)} for teacher '{teacher_name}'."
+        )
+
     for record, output in zip(records, outputs):
         record["teacher_name"] = teacher_name
         record["stage_name"] = "stage_a"

@@ -44,6 +44,8 @@ if torch is not None:
 class HFCausalLMTeacher(Teacher, TeacherRuntime):
     """Minimal HF causal LM backend for teacher signal extraction."""
 
+    _RESOURCE_CACHE: dict[tuple[str, str, str, int | None], tuple[Any, Any]] = {}
+
     def __init__(
         self,
         model_name_or_path: str,
@@ -123,20 +125,31 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
         if torch is None or AutoTokenizer is None or AutoModelForCausalLM is None:
             raise ModuleNotFoundError("transformers and torch are required for HFCausalLMTeacher.")
 
-        dtype = _DTYPE_MAP.get(self.torch_dtype, torch.float32)
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path)
-        if self.hf_pad_token_id is not None:
-            self._tokenizer.pad_token_id = int(self.hf_pad_token_id)
+        if self._tokenizer is not None and self._model is not None:
+            return
 
-        self._model = AutoModelForCausalLM.from_pretrained(
+        cache_key = (self.model_name_or_path, self.device_map, self.torch_dtype, self.hf_pad_token_id)
+        cached = self._RESOURCE_CACHE.get(cache_key)
+        if cached is not None:
+            self._tokenizer, self._model = cached
+            return
+
+        dtype = _DTYPE_MAP.get(self.torch_dtype, torch.float32)
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path)
+        if self.hf_pad_token_id is not None:
+            tokenizer.pad_token_id = int(self.hf_pad_token_id)
+
+        model = AutoModelForCausalLM.from_pretrained(
             self.model_name_or_path,
             torch_dtype=dtype,
             device_map=self.device_map,
         )
-        if self.hf_pad_token_id is not None and hasattr(self._model, "config"):
-            self._model.config.pad_token_id = int(self.hf_pad_token_id)
+        if self.hf_pad_token_id is not None and hasattr(model, "config"):
+            model.config.pad_token_id = int(self.hf_pad_token_id)
 
-        self._model.eval()
+        model.eval()
+        self._RESOURCE_CACHE[cache_key] = (tokenizer, model)
+        self._tokenizer, self._model = tokenizer, model
 
 
     def _prepare_stage_b_record(self, record: dict[str, Any]) -> dict[str, Any]:
@@ -362,6 +375,11 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
                         out_item["hidden_summary"] = hidden_vec
                     outputs.append(out_item)
 
+        if len(outputs) != len(records):
+            raise RuntimeError(
+                "HF infer_topk output count mismatch: "
+                f"expected {len(records)} outputs, got {len(outputs)}."
+            )
         return outputs
 
     def infer_structured(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:

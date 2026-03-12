@@ -8,6 +8,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import pytest
 
 from distill_factory.teachers.hf_causal_lm import HFCausalLMTeacher
+import distill_factory.teachers.hf_causal_lm as hf_causal_lm_module
 from distill_factory.teachers.llamacpp_server import LlamaCppServerTeacher
 from distill_factory.teachers.vllm_causal_lm import VLLMCausalLMTeacher
 import distill_factory.teachers.vllm_causal_lm as vllm_causal_lm_module
@@ -592,6 +593,39 @@ def test_vllm_infer_topk_per_token_top1_gap_is_zero_when_row_has_single_candidat
 
     assert len(out["per_token_top1_gap"]) == len(out["top_k_ids"])
     assert all(float(v) == 0.0 for v in out["per_token_top1_gap"])
+
+
+
+def test_hf_prepare_reuses_cached_model_and_tokenizer(monkeypatch) -> None:
+    HFCausalLMTeacher._RESOURCE_CACHE.clear()
+    calls = {"tokenizer": 0, "model": 0}
+
+    class _TokenizerFactory:
+        @staticmethod
+        def from_pretrained(_name):
+            calls["tokenizer"] += 1
+            return type("Tok", (), {"pad_token_id": None})()
+
+    class _ModelFactory:
+        @staticmethod
+        def from_pretrained(_name, torch_dtype=None, device_map=None):
+            _ = (torch_dtype, device_map)
+            calls["model"] += 1
+            return type("Model", (), {"config": type("Cfg", (), {"pad_token_id": None})(), "eval": lambda self: None})()
+
+    monkeypatch.setattr(hf_causal_lm_module, "AutoTokenizer", _TokenizerFactory)
+    monkeypatch.setattr(hf_causal_lm_module, "AutoModelForCausalLM", _ModelFactory)
+    monkeypatch.setattr(hf_causal_lm_module, "torch", type("TorchStub", (), {"float32": object()}))
+
+    teacher = HFCausalLMTeacher(model_name_or_path="dummy", device_map="cpu", torch_dtype="float32", batch_size=1)
+    teacher.prepare()
+    teacher.close()
+    teacher.prepare()
+
+    assert calls["tokenizer"] == 1
+    assert calls["model"] == 1
+
+
 
 def test_hf_backend_smoke_topk_semantics() -> None:
     pytest.importorskip("torch")

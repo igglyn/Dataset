@@ -2,6 +2,8 @@ import pathlib
 import sys
 from typing import Any
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import distill_factory.pipeline.stage_a as stage_a_module
@@ -225,3 +227,18 @@ def test_stage_a_combined_selection_defaults_to_union(monkeypatch) -> None:
     assert len(out) == 2
     assert [r["extra_metadata"]["selected_window_start"] for r in out] == [1, 2]
     assert out[0]["extra_metadata"]["selection_policy"]["combine_mode"] == "union"
+
+
+def test_stage_a_raises_when_teacher_output_count_mismatches_records(monkeypatch) -> None:
+    output = {
+        "top_k_ids": [[1, 2]],
+        "top_k_logprobs": [[-0.1, -0.2]],
+        "entropy": 0.5,
+    }
+    _patch_stage_a(monkeypatch, [output])
+
+    record_a = _make_record(doc_id="doc-a")
+    record_b = _make_record(doc_id="doc-b")
+
+    with pytest.raises(RuntimeError, match="result count mismatch"):
+        stage_a_module.run_stage_a([record_a, record_b], teacher_name="dummy", mode="topk_logits", dry_run=False)
