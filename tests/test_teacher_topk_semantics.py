@@ -485,6 +485,131 @@ def test_hf_infer_topk_uses_zero_padding_token_ids() -> None:
     assert int(teacher._model.last_input_ids[1, 2].item()) == 0
 
 
+def test_hf_infer_topk_batch_debug_logging_tracks_requested_examples(caplog) -> None:
+    torch = pytest.importorskip("torch")
+
+    class _FakeTokenizer:
+        vocab_size = 7
+
+        def __call__(self, texts: list[str], return_tensors: str, padding: bool, truncation: bool, max_length: int):
+            _ = (return_tensors, padding, truncation, max_length)
+            batch = len(texts)
+            input_ids = torch.tensor([[4, 5, 6] for _ in range(batch)], dtype=torch.long)
+            attention_mask = torch.tensor([[1, 1, 1] for _ in range(batch)], dtype=torch.long)
+            return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    class _FakeModelOut:
+        def __init__(self, logits):
+            self.logits = logits
+            self.hidden_states = None
+
+    class _FakeModel:
+        def __init__(self):
+            self.device = torch.device("cpu")
+
+        def __call__(self, **kwargs):
+            input_ids = kwargs["input_ids"]
+            batch = int(input_ids.shape[0])
+            logits = torch.tensor(
+                [
+                    [
+                        [0.0, 2.0, 1.0, -1.0, -2.0, -3.0, -4.0],
+                        [0.0, 1.0, 2.0, -1.0, -2.0, -3.0, -4.0],
+                        [0.0, 0.5, 0.1, -1.0, -2.0, -3.0, -4.0],
+                    ]
+                    for _ in range(batch)
+                ],
+                dtype=torch.float32,
+            )
+            return _FakeModelOut(logits=logits)
+
+        def eval(self):
+            return None
+
+    teacher = HFCausalLMTeacher(model_name_or_path="dummy", max_context=16, batch_size=2)
+    teacher._tokenizer = _FakeTokenizer()
+    teacher._model = _FakeModel()
+
+    with caplog.at_level("DEBUG", logger=hf_causal_lm_module.__name__):
+        out = teacher.infer_topk(
+            [
+                {"raw_bytes": b"abc", "top_k": 2},
+                {"raw_bytes": b"def", "top_k": 2},
+                {"raw_bytes": b"ghi", "top_k": 2},
+            ]
+        )
+
+    assert len(out) == 3
+    msgs = [r.message for r in caplog.records if "HF infer_topk processed batch" in r.message]
+    assert len(msgs) == 2
+    assert "running_total=2" in msgs[0]
+    assert "requested_total=3" in msgs[0]
+    assert "running_total=3" in msgs[1]
+    assert "requested_total=3" in msgs[1]
+
+
+
+def test_hf_infer_topk_terminates_at_requested_example_count() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _FakeTokenizer:
+        vocab_size = 7
+
+        def __call__(self, texts: list[str], return_tensors: str, padding: bool, truncation: bool, max_length: int):
+            _ = (return_tensors, padding, truncation, max_length)
+            batch = len(texts)
+            input_ids = torch.tensor([[4, 5, 6] for _ in range(batch)], dtype=torch.long)
+            attention_mask = torch.tensor([[1, 1, 1] for _ in range(batch)], dtype=torch.long)
+            return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    class _FakeModelOut:
+        def __init__(self, logits):
+            self.logits = logits
+            self.hidden_states = None
+
+    class _FakeModel:
+        def __init__(self):
+            self.device = torch.device("cpu")
+            self.call_batches: list[int] = []
+
+        def __call__(self, **kwargs):
+            batch = int(kwargs["input_ids"].shape[0])
+            self.call_batches.append(batch)
+            logits = torch.tensor(
+                [
+                    [
+                        [0.0, 2.0, 1.0, -1.0, -2.0, -3.0, -4.0],
+                        [0.0, 1.0, 2.0, -1.0, -2.0, -3.0, -4.0],
+                        [0.0, 0.5, 0.1, -1.0, -2.0, -3.0, -4.0],
+                    ]
+                    for _ in range(batch)
+                ],
+                dtype=torch.float32,
+            )
+            return _FakeModelOut(logits=logits)
+
+        def eval(self):
+            return None
+
+    teacher = HFCausalLMTeacher(model_name_or_path="dummy", max_context=16, batch_size=2)
+    teacher._tokenizer = _FakeTokenizer()
+    model = _FakeModel()
+    teacher._model = model
+
+    out = teacher.infer_topk(
+        [
+            {"raw_bytes": b"abc", "top_k": 2},
+            {"raw_bytes": b"def", "top_k": 2},
+            {"raw_bytes": b"ghi", "top_k": 2},
+            {"raw_bytes": b"jkl", "top_k": 2},
+            {"raw_bytes": b"mno", "top_k": 2},
+        ]
+    )
+
+    assert len(out) == 5
+    # Finite range-based batching should stop exactly after ceil(5/2)=3 model calls.
+    assert model.call_batches == [2, 2, 1]
+
 
 def test_vllm_infer_topk_emits_per_token_selection_signals_when_enabled() -> None:
     class _FakeTokenizer:

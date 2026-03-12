@@ -13,6 +13,7 @@ Policy notes:
 from __future__ import annotations
 
 import math
+import logging
 from typing import Any
 
 try:
@@ -45,6 +46,7 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
     """Minimal HF causal LM backend for teacher signal extraction."""
 
     _RESOURCE_CACHE: dict[tuple[str, str, str, int | None], tuple[Any, Any]] = {}
+    _LOGGER = logging.getLogger(__name__)
 
     def __init__(
         self,
@@ -278,9 +280,12 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
             raise RuntimeError("Teacher must be prepared before inference.")
 
         outputs: list[dict[str, Any]] = []
+        expected_total = len(records)
+        emitted_total = 0
         with torch.inference_mode():
             for offset in range(0, len(records), self.batch_size):
                 batch = [self._prepare_stage_b_record(r) for r in records[offset : offset + self.batch_size]]
+                expected_batch = len(batch)
                 texts = [self._extract_text(r) for r in batch]
                 input_byte_lengths = [len(t.encode("utf-8", errors="replace")) for t in texts]
                 need_hidden = self.extract_hidden_summary or any(bool(r.get("extract_hidden_summary", False)) for r in batch)
@@ -375,6 +380,31 @@ class HFCausalLMTeacher(Teacher, TeacherRuntime):
                         out_item["hidden_summary"] = hidden_vec
                     outputs.append(out_item)
 
+                emitted_total += int(logprobs.shape[0])
+                if int(logprobs.shape[0]) != expected_batch:
+                    raise RuntimeError(
+                        "HF infer_topk batch output count mismatch: "
+                        f"offset={offset}, expected {expected_batch} outputs, got {int(logprobs.shape[0])}."
+                    )
+                if emitted_total > expected_total:
+                    raise RuntimeError(
+                        "HF infer_topk termination guard violation: "
+                        f"running emitted outputs ({emitted_total}) exceeded requested total ({expected_total})."
+                    )
+                self._LOGGER.debug(
+                    "HF infer_topk processed batch: offset=%d batch_size=%d emitted=%d running_total=%d requested_total=%d",
+                    offset,
+                    expected_batch,
+                    int(logprobs.shape[0]),
+                    emitted_total,
+                    expected_total,
+                )
+
+        if emitted_total != expected_total:
+            raise RuntimeError(
+                "HF infer_topk termination mismatch: "
+                f"requested {expected_total} examples but emitted {emitted_total}."
+            )
         if len(outputs) != len(records):
             raise RuntimeError(
                 "HF infer_topk output count mismatch: "
