@@ -35,6 +35,11 @@ def test_resolve_device_map_offloads_trailing_layers(monkeypatch) -> None:
     assert resolved["model.layers.1"] == "cuda:0"
     assert resolved["model.layers.2"] == "cuda:0"
     assert resolved["model.layers.3"] == "cuda:0"
+    assert "model.layers.4" not in resolved
+    assert "model.layers.5" not in resolved
+    assert resolved["model.embed_tokens"] == "cuda:0"
+    assert resolved["model.norm"] == "cuda:0"
+    assert resolved["lm_head"] == "cuda:0"
 
 
 def test_resolve_device_map_all_layers_offloaded_means_cpu(monkeypatch) -> None:
